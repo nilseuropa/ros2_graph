@@ -17,11 +17,16 @@ const BASE_STROKE_WIDTH = 1.5;
 const MIN_STROKE_WIDTH = 0.75;
 const MAX_STROKE_WIDTH = 2.5;
 const DESIRED_LABEL_SCALE = 0.5;
-const HIGHLIGHT_EDGE_COLOR = '#ff9800';
-const HIGHLIGHT_NODE_STROKE = '#ff9800';
-const HIGHLIGHT_NODE_FILL = '#ffe6bf';
-const HIGHLIGHT_TOPIC_STROKE = '#ff9800';
-const HIGHLIGHT_TOPIC_FILL = '#d8f5d0';
+const SELECT_EDGE_COLOR = '#ff9800';
+const SELECT_NODE_STROKE = '#ff9800';
+const SELECT_NODE_FILL = '#ffe6bf';
+const SELECT_TOPIC_STROKE = '#ff9800';
+const SELECT_TOPIC_FILL = '#d8f5d0';
+const HOVER_EDGE_COLOR = '#42a5f5';
+const HOVER_NODE_STROKE = '#42a5f5';
+const HOVER_NODE_FILL = '#d6ecff';
+const HOVER_TOPIC_STROKE = '#42a5f5';
+const HOVER_TOPIC_FILL = '#cbe8ff';
 const MIN_ARROW_HEAD = 4;
 const MAX_ARROW_HEAD = 18;
 let userAdjustedView = false;
@@ -91,12 +96,45 @@ function normaliseHighlight(highlight) {
   };
 }
 
-function setSelection(highlight) {
-  const normalised = normaliseHighlight(highlight);
-  if (normalised.key === currentSelection.key) {
+function setSelection(highlight, mode = 'replace') {
+  let newNodes;
+  let newEdges;
+  if (mode === 'clear' || !highlight) {
+    newNodes = new Set();
+    newEdges = new Set();
+  } else if (mode === 'toggle') {
+    const normalised = normaliseHighlight(highlight);
+    newNodes = new Set(currentSelection.nodes);
+    newEdges = new Set(currentSelection.edges);
+    normalised.nodes.forEach(node => {
+      if (newNodes.has(node)) {
+        newNodes.delete(node);
+      } else {
+        newNodes.add(node);
+      }
+    });
+    normalised.edges.forEach(edge => {
+      if (newEdges.has(edge)) {
+        newEdges.delete(edge);
+      } else {
+        newEdges.add(edge);
+      }
+    });
+  } else {
+    const normalised = normaliseHighlight(highlight);
+    newNodes = normalised.nodes;
+    newEdges = normalised.edges;
+  }
+
+  const key = makeHighlightKey(Array.from(newNodes).sort(), Array.from(newEdges).sort());
+  if (key === currentSelection.key) {
     return;
   }
-  currentSelection = normalised;
+  currentSelection = {
+    key,
+    nodes: newNodes,
+    edges: newEdges,
+  };
   if (lastGraph) {
     renderGraph(lastGraph, lastFingerprint);
   }
@@ -743,6 +781,7 @@ canvas.addEventListener('pointermove', handlePointerMove);
 canvas.addEventListener('pointerup', handlePointerUp);
 canvas.addEventListener('pointercancel', handlePointerCancel);
 canvas.addEventListener('pointerleave', handlePointerCancel);
+canvas.addEventListener('dblclick', handleDoubleClick);
 
 const HIDDEN_NAME_PATTERNS = [/\/rosout\b/i];
 
@@ -962,10 +1001,10 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
 
   const edgeUsage = new Map();
   const sceneEdges = [];
-  const combinedNodes = new Set(currentSelection.nodes);
-  hoverHighlight.nodes.forEach(node => combinedNodes.add(node));
-  const combinedEdges = new Set(currentSelection.edges);
-  hoverHighlight.edges.forEach(edge => combinedEdges.add(edge));
+  const selectedNodes = currentSelection.nodes;
+  const hoverNodes = hoverHighlight.nodes;
+  const selectedEdges = currentSelection.edges;
+  const hoverEdges = hoverHighlight.edges;
 
   (graph.edges || []).forEach(edge => {
     const key = edge.start + '->' + edge.end;
@@ -999,20 +1038,41 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     edgeUsage.set(key, idx + 1);
     const edgeId = key + '#' + idx;
     const storedPoints = points.map(pt => ({ x: pt.x, y: pt.y }));
-    const edgeHighlighted =
-      combinedEdges.has(edgeId) ||
-      (combinedNodes.has(edge.start) && combinedNodes.has(edge.end));
+    let highlightState = 'none';
+    if (selectedEdges.has(edgeId) ||
+        (selectedNodes.has(edge.start) && selectedNodes.has(edge.end))) {
+      highlightState = 'selected';
+    } else if (hoverEdges.has(edgeId) ||
+        (hoverNodes.has(edge.start) && hoverNodes.has(edge.end))) {
+      highlightState = 'hover';
+    }
     sceneEdges.push({
       id: edgeId,
       start: edge.start,
       end: edge.end,
       points: storedPoints,
     });
-    drawEdgeWithPath(points, edgeHighlighted);
+    drawEdgeWithPath(points, highlightState);
   });
 
-  nodeNames.forEach(name => drawNode(name, nodeGeometry[name], combinedNodes.has(name)));
-  topicNames.forEach(name => drawTopic(name, nodeGeometry[name], combinedNodes.has(name)));
+  nodeNames.forEach(name => {
+    let highlightState = 'none';
+    if (selectedNodes.has(name)) {
+      highlightState = 'selected';
+    } else if (hoverNodes.has(name)) {
+      highlightState = 'hover';
+    }
+    drawNode(name, nodeGeometry[name], highlightState);
+  });
+  topicNames.forEach(name => {
+    let highlightState = 'none';
+    if (selectedNodes.has(name)) {
+      highlightState = 'selected';
+    } else if (hoverNodes.has(name)) {
+      highlightState = 'hover';
+    }
+    drawTopic(name, nodeGeometry[name], highlightState);
+  });
   ctx.restore();
 
   const nodesMap = new Map(Object.entries(nodeGeometry));
@@ -1061,12 +1121,11 @@ function handlePointerDown(event) {
     const highlight = nodeHit
       ? computeNodeHoverHighlight(nodeHit.name, nodeHit.geometry)
       : computeEdgeHoverHighlight(edgeHit);
-    setSelection(highlight);
+    setSelection(highlight, 'toggle');
     setHoverHighlight(highlight);
     return;
   }
 
-  setSelection(null);
   setHoverHighlight(null);
   panState.active = true;
   panState.pointerId = event.pointerId;
@@ -1129,21 +1188,40 @@ function handlePointerCancel(event) {
   clearHoverHighlight();
 }
 
-function drawEdgeWithPath(points, highlighted) {
+function handleDoubleClick(event) {
+  if (!lastGraph) {
+    return;
+  }
+  event.preventDefault();
+  const point = getCanvasPoint(event);
+  const graphPoint = toGraphSpace(point);
+  const nodeHit = findNodeAt(graphPoint);
+  const edgeHit = nodeHit ? null : findEdgeAt(graphPoint);
+  if (nodeHit || edgeHit) {
+    return;
+  }
+  setSelection(null, 'clear');
+  setHoverHighlight(null);
+}
+
+function drawEdgeWithPath(points, highlightState) {
   if (!points || points.length < 2) {
     return;
   }
   ctx.save();
   const baseStroke = getStrokeWidth();
-  if (highlighted) {
-    ctx.strokeStyle = HIGHLIGHT_EDGE_COLOR;
-    ctx.fillStyle = HIGHLIGHT_EDGE_COLOR;
-    ctx.lineWidth = Math.min(MAX_STROKE_WIDTH * 1.8, baseStroke * 1.8 + 1);
-  } else {
-    ctx.strokeStyle = '#1f2328';
-    ctx.fillStyle = '#1f2328';
-    ctx.lineWidth = baseStroke;
+  let stroke = '#1f2328';
+  let width = baseStroke;
+  if (highlightState === 'selected') {
+    stroke = SELECT_EDGE_COLOR;
+    width = Math.min(MAX_STROKE_WIDTH * 1.8, baseStroke * 1.8 + 1);
+  } else if (highlightState === 'hover') {
+    stroke = HOVER_EDGE_COLOR;
+    width = Math.min(MAX_STROKE_WIDTH * 1.4, baseStroke * 1.4 + 0.5);
   }
+  ctx.strokeStyle = stroke;
+  ctx.fillStyle = stroke;
+  ctx.lineWidth = width;
   drawPolyline(points);
   drawArrowHead(points[points.length - 2], points[points.length - 1]);
   ctx.restore();
@@ -1266,7 +1344,7 @@ function drawGraphvizLabel(lines, center, boxWidth, options) {
   ctx.restore();
 }
 
-function drawNode(name, geometry, highlighted) {
+function drawNode(name, geometry, highlightState) {
   if (!geometry) {
     return;
   }
@@ -1275,19 +1353,21 @@ function drawNode(name, geometry, highlighted) {
   const ry = Math.max(height / 2, 4);
   ctx.save();
   const baseStroke = getStrokeWidth();
-  if (highlighted) {
-    ctx.lineWidth = Math.min(MAX_STROKE_WIDTH * 1.6, baseStroke * 1.6 + 1);
-    ctx.strokeStyle = HIGHLIGHT_NODE_STROKE;
-    ctx.fillStyle = HIGHLIGHT_NODE_FILL;
-  } else {
-    ctx.lineWidth = baseStroke;
-    ctx.strokeStyle = info.strokeColor || '#1f2328';
-    const fill =
-      info.fillColor && info.fillColor !== 'none'
-        ? info.fillColor
-        : '#9ebaff';
-    ctx.fillStyle = fill;
+  let stroke = info.strokeColor || '#1f2328';
+  let fill = info.fillColor && info.fillColor !== 'none' ? info.fillColor : '#9ebaff';
+  let lineWidth = baseStroke;
+  if (highlightState === 'selected') {
+    stroke = SELECT_NODE_STROKE;
+    fill = SELECT_NODE_FILL;
+    lineWidth = Math.min(MAX_STROKE_WIDTH * 1.6, baseStroke * 1.6 + 1);
+  } else if (highlightState === 'hover') {
+    stroke = HOVER_NODE_STROKE;
+    fill = HOVER_NODE_FILL;
+    lineWidth = Math.min(MAX_STROKE_WIDTH * 1.3, baseStroke * 1.3 + 0.5);
   }
+  ctx.lineWidth = lineWidth;
+  ctx.strokeStyle = stroke;
+  ctx.fillStyle = fill;
   ctx.beginPath();
   ctx.ellipse(center.x, center.y, rx, ry, 0, 0, Math.PI * 2);
   ctx.fill();
@@ -1296,7 +1376,7 @@ function drawNode(name, geometry, highlighted) {
   ctx.restore();
 }
 
-function drawTopic(name, geometry, highlighted) {
+function drawTopic(name, geometry, highlightState) {
   if (!geometry) {
     return;
   }
@@ -1305,19 +1385,21 @@ function drawTopic(name, geometry, highlighted) {
   const boxHeight = Math.max(height, 12);
   ctx.save();
   const baseStroke = getStrokeWidth();
-  if (highlighted) {
-    ctx.lineWidth = Math.min(MAX_STROKE_WIDTH * 1.6, baseStroke * 1.6 + 1);
-    ctx.strokeStyle = HIGHLIGHT_TOPIC_STROKE;
-    ctx.fillStyle = HIGHLIGHT_TOPIC_FILL;
-  } else {
-    ctx.lineWidth = baseStroke;
-    ctx.strokeStyle = info.strokeColor || '#1f2328';
-    const fill =
-      info.fillColor && info.fillColor !== 'none'
-        ? info.fillColor
-        : '#b8e1b3';
-    ctx.fillStyle = fill;
+  let stroke = info.strokeColor || '#1f2328';
+  let fill = info.fillColor && info.fillColor !== 'none' ? info.fillColor : '#b8e1b3';
+  let lineWidth = baseStroke;
+  if (highlightState === 'selected') {
+    stroke = SELECT_TOPIC_STROKE;
+    fill = SELECT_TOPIC_FILL;
+    lineWidth = Math.min(MAX_STROKE_WIDTH * 1.6, baseStroke * 1.6 + 1);
+  } else if (highlightState === 'hover') {
+    stroke = HOVER_TOPIC_STROKE;
+    fill = HOVER_TOPIC_FILL;
+    lineWidth = Math.min(MAX_STROKE_WIDTH * 1.3, baseStroke * 1.3 + 0.5);
   }
+  ctx.lineWidth = lineWidth;
+  ctx.strokeStyle = stroke;
+  ctx.fillStyle = fill;
   const x = center.x - boxWidth / 2;
   const y = center.y - boxHeight / 2;
   const radius = Math.min(12, Math.min(boxWidth, boxHeight) / 4);
