@@ -35,7 +35,12 @@ let currentScene = {
   nodes: new Map(),
   edges: [],
 };
-let currentHighlight = {
+let currentSelection = {
+  key: '',
+  nodes: new Set(),
+  edges: new Set(),
+};
+let hoverHighlight = {
   key: '',
   nodes: new Set(),
   edges: new Set(),
@@ -67,28 +72,49 @@ function makeHighlightKey(nodes, edges) {
   return nodeKey + '||' + edgeKey;
 }
 
-function updateHighlight(highlight) {
-  const nodes = highlight?.nodes ? Array.from(highlight.nodes) : [];
-  const edges = highlight?.edges ? Array.from(highlight.edges) : [];
-  const key = makeHighlightKey(nodes, edges);
-  if (key === currentHighlight.key) {
+function normaliseHighlight(highlight) {
+  if (!highlight) {
+    return {
+      key: '',
+      nodes: new Set(),
+      edges: new Set(),
+    };
+  }
+  const nodeList = Array.from(highlight.nodes ?? []);
+  const edgeList = Array.from(highlight.edges ?? []);
+  const uniqueNodes = Array.from(new Set(nodeList.filter(Boolean))).sort();
+  const uniqueEdges = Array.from(new Set(edgeList.filter(Boolean))).sort();
+  return {
+    key: makeHighlightKey(uniqueNodes, uniqueEdges),
+    nodes: new Set(uniqueNodes),
+    edges: new Set(uniqueEdges),
+  };
+}
+
+function setSelection(highlight) {
+  const normalised = normaliseHighlight(highlight);
+  if (normalised.key === currentSelection.key) {
     return;
   }
-  currentHighlight = {
-    key,
-    nodes: new Set(nodes),
-    edges: new Set(edges),
-  };
+  currentSelection = normalised;
   if (lastGraph) {
     renderGraph(lastGraph, lastFingerprint);
   }
 }
 
 function clearHoverHighlight() {
-  if (currentHighlight.key === '') {
+  setHoverHighlight(null);
+}
+
+function setHoverHighlight(highlight) {
+  const normalised = normaliseHighlight(highlight);
+  if (normalised.key === hoverHighlight.key) {
     return;
   }
-  updateHighlight(null);
+  hoverHighlight = normalised;
+  if (lastGraph) {
+    renderGraph(lastGraph, lastFingerprint);
+  }
 }
 
 function stripQuotes(value) {
@@ -570,13 +596,13 @@ function updateHoverHighlight(event) {
   const nodeHit = findNodeAt(graphPoint);
   if (nodeHit) {
     const highlight = computeNodeHoverHighlight(nodeHit.name, nodeHit.geometry);
-    updateHighlight(highlight);
+    setHoverHighlight(highlight);
     return;
   }
   const edgeHit = findEdgeAt(graphPoint);
   if (edgeHit) {
     const highlight = computeEdgeHoverHighlight(edgeHit);
-    updateHighlight(highlight);
+    setHoverHighlight(highlight);
     return;
   }
   clearHoverHighlight();
@@ -909,6 +935,11 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
 
   const edgeUsage = new Map();
   const sceneEdges = [];
+  const combinedNodes = new Set(currentSelection.nodes);
+  hoverHighlight.nodes.forEach(node => combinedNodes.add(node));
+  const combinedEdges = new Set(currentSelection.edges);
+  hoverHighlight.edges.forEach(edge => combinedEdges.add(edge));
+
   (graph.edges || []).forEach(edge => {
     const key = edge.start + '->' + edge.end;
     const idx = edgeUsage.get(key) ?? 0;
@@ -939,8 +970,8 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     const edgeId = key + '#' + idx;
     const storedPoints = points.map(pt => ({ x: pt.x, y: pt.y }));
     const edgeHighlighted =
-      currentHighlight.edges.has(edgeId) ||
-      (currentHighlight.nodes.has(edge.start) && currentHighlight.nodes.has(edge.end));
+      combinedEdges.has(edgeId) ||
+      (combinedNodes.has(edge.start) && combinedNodes.has(edge.end));
     sceneEdges.push({
       id: edgeId,
       start: edge.start,
@@ -950,8 +981,8 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     drawEdgeWithPath(points, edgeHighlighted);
   });
 
-  nodeNames.forEach(name => drawNode(name, nodeGeometry[name], currentHighlight.nodes.has(name)));
-  topicNames.forEach(name => drawTopic(name, nodeGeometry[name], currentHighlight.nodes.has(name)));
+  nodeNames.forEach(name => drawNode(name, nodeGeometry[name], combinedNodes.has(name)));
+  topicNames.forEach(name => drawTopic(name, nodeGeometry[name], combinedNodes.has(name)));
   ctx.restore();
 
   const nodesMap = new Map(Object.entries(nodeGeometry));
@@ -992,12 +1023,26 @@ function handlePointerDown(event) {
   }
   event.preventDefault();
   const point = getCanvasPoint(event);
+  const graphPoint = toGraphSpace(point);
+  const nodeHit = findNodeAt(graphPoint);
+  const edgeHit = nodeHit ? null : findEdgeAt(graphPoint);
+
+  if (nodeHit || edgeHit) {
+    const highlight = nodeHit
+      ? computeNodeHoverHighlight(nodeHit.name, nodeHit.geometry)
+      : computeEdgeHoverHighlight(edgeHit);
+    setSelection(highlight);
+    setHoverHighlight(highlight);
+    return;
+  }
+
+  setSelection(null);
+  setHoverHighlight(null);
   panState.active = true;
   panState.pointerId = event.pointerId;
   panState.lastX = point.x;
   panState.lastY = point.y;
   userAdjustedView = true;
-  clearHoverHighlight();
   try {
     canvas.setPointerCapture(event.pointerId);
   } catch (err) {
@@ -1043,9 +1088,10 @@ function endPan(pointerId) {
 function handlePointerUp(event) {
   if (panState.active && event.pointerId === panState.pointerId) {
     event.preventDefault();
+    endPan(event.pointerId);
+    updateHoverHighlight(event);
+    return;
   }
-  endPan(event.pointerId);
-  updateHoverHighlight(event);
 }
 
 function handlePointerCancel(event) {
