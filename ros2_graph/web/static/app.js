@@ -960,25 +960,28 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     const idx = edgeUsage.get(key) ?? 0;
     const tailGeom = nodeGeometry[edge.start];
     const headGeom = nodeGeometry[edge.end];
+    if (!tailGeom || !headGeom) {
+      return;
+    }
+
     let points = buildOrthogonalPath(tailGeom, headGeom);
     if (!points || points.length < 2) {
       if (edgeLookup && edgeLookup.has(key)) {
         const variants = edgeLookup.get(key);
         points = variants[Math.min(idx, variants.length - 1)];
       }
-      if (!points) {
-        const start = nodeGeometry[edge.start]?.center;
-        const end = nodeGeometry[edge.end]?.center;
-        if (start && end) {
-          points = [start, end];
-        }
+    }
+    if (!points || points.length < 2) {
+      const start = tailGeom?.center;
+      const end = headGeom?.center;
+      if (start && end) {
+        points = [start, end];
       }
-      if (!points || points.length < 2) {
-        points = [
-          { x: width / 2, y: height / 2 },
-          { x: width / 2, y: height / 2 },
-        ];
-      }
+    }
+    if (!points || points.length < 2) {
+      return;
+    }
+    if (!edgeLookup || !edgeLookup.has(key)) {
       points = adjustEdgePath(points, tailGeom, headGeom);
     }
     edgeUsage.set(key, idx + 1);
