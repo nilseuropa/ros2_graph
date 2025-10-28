@@ -16,7 +16,7 @@ const ZOOM_SENSITIVITY = 0.0015;
 const BASE_STROKE_WIDTH = 1.5;
 const MIN_STROKE_WIDTH = 0.75;
 const MAX_STROKE_WIDTH = 2.5;
-const DESIRED_LABEL_SCALE = 0.5;
+const DESIRED_LABEL_SCALE = 1.0;
 const MIN_ARROW_HEAD = 4;
 const MAX_ARROW_HEAD = 18;
 let userAdjustedView = false;
@@ -318,6 +318,82 @@ function adjustEdgePath(points, tailGeometry, headGeometry) {
     }
   }
   return adjusted;
+}
+
+function buildOrthogonalPath(tailGeometry, headGeometry) {
+  if (!tailGeometry || !headGeometry) {
+    return null;
+  }
+  if (tailGeometry === headGeometry) {
+    const center = tailGeometry.center;
+    const rightRef = { x: center.x + 1, y: center.y };
+    const topRef = { x: center.x, y: center.y - 1 };
+    const start = computeBoundaryPoint(tailGeometry, rightRef);
+    const end = computeBoundaryPoint(headGeometry, topRef);
+    if (!start || !end) {
+      return null;
+    }
+    const offsetX = Math.max(tailGeometry.width * 0.8, 32);
+    const offsetY = Math.max(tailGeometry.height * 1.2, 48);
+    const path = [
+      start,
+      { x: start.x + offsetX, y: start.y },
+      { x: start.x + offsetX, y: start.y - offsetY },
+      { x: end.x, y: start.y - offsetY },
+      end,
+    ];
+    return path;
+  }
+
+  const startCenter = tailGeometry.center;
+  const endCenter = headGeometry.center;
+  const dx = endCenter.x - startCenter.x;
+  const dy = endCenter.y - startCenter.y;
+  const horizontalFirst = Math.abs(dx) >= Math.abs(dy);
+  const signX = dx === 0 ? 1 : Math.sign(dx);
+  const signY = dy === 0 ? 1 : Math.sign(dy);
+
+  const startReference = horizontalFirst
+    ? { x: startCenter.x + signX, y: startCenter.y }
+    : { x: startCenter.x, y: startCenter.y + signY };
+  const endReference = horizontalFirst
+    ? { x: endCenter.x - signX, y: endCenter.y }
+    : { x: endCenter.x, y: endCenter.y - signY };
+
+  const start = computeBoundaryPoint(tailGeometry, startReference);
+  const end = computeBoundaryPoint(headGeometry, endReference);
+  if (!start || !end) {
+    return null;
+  }
+
+  const points = [start];
+  if (horizontalFirst) {
+    const midX = (start.x + end.x) / 2;
+    if (!Number.isFinite(midX)) {
+      return [start, end];
+    }
+    if (Math.abs(midX - start.x) > 1e-3) {
+      points.push({ x: midX, y: start.y });
+    }
+    if (Math.abs(end.y - start.y) > 1e-3) {
+      points.push({ x: midX, y: end.y });
+    }
+  } else {
+    const midY = (start.y + end.y) / 2;
+    if (!Number.isFinite(midY)) {
+      return [start, end];
+    }
+    if (Math.abs(midY - start.y) > 1e-3) {
+      points.push({ x: start.x, y: midY });
+    }
+    if (Math.abs(end.x - start.x) > 1e-3) {
+      points.push({ x: end.x, y: midY });
+    }
+  }
+
+  points.push(end);
+
+  return points;
 }
 
 function clamp(value, min, max) {
@@ -627,30 +703,32 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
 
   const edgeUsage = new Map();
   (graph.edges || []).forEach(edge => {
-    const key = edge.start + '->' + edge.end;
-    let points = null;
-    if (edgeLookup && edgeLookup.has(key)) {
-      const variants = edgeLookup.get(key);
-      const idx = edgeUsage.get(key) ?? 0;
-      points = variants[Math.min(idx, variants.length - 1)];
-      edgeUsage.set(key, idx + 1);
-    }
-    if (!points) {
-      const start = nodeGeometry[edge.start]?.center;
-      const end = nodeGeometry[edge.end]?.center;
-      if (start && end) {
-        points = [start, end];
-      }
-    }
-    if (!points || points.length < 2) {
-      points = [
-        { x: width / 2, y: height / 2 },
-        { x: width / 2, y: height / 2 },
-      ];
-    }
     const tailGeom = nodeGeometry[edge.start];
     const headGeom = nodeGeometry[edge.end];
-    points = adjustEdgePath(points, tailGeom, headGeom);
+    let points = buildOrthogonalPath(tailGeom, headGeom);
+    if (!points || points.length < 2) {
+      const key = edge.start + '->' + edge.end;
+      if (edgeLookup && edgeLookup.has(key)) {
+        const variants = edgeLookup.get(key);
+        const idx = edgeUsage.get(key) ?? 0;
+        points = variants[Math.min(idx, variants.length - 1)];
+        edgeUsage.set(key, idx + 1);
+      }
+      if (!points) {
+        const start = nodeGeometry[edge.start]?.center;
+        const end = nodeGeometry[edge.end]?.center;
+        if (start && end) {
+          points = [start, end];
+        }
+      }
+      if (!points || points.length < 2) {
+        points = [
+          { x: width / 2, y: height / 2 },
+          { x: width / 2, y: height / 2 },
+        ];
+      }
+      points = adjustEdgePath(points, tailGeom, headGeom);
+    }
     drawEdgeWithPath(points);
   });
 
@@ -751,33 +829,17 @@ function drawEdgeWithPath(points) {
   ctx.strokeStyle = '#1f2328';
   ctx.fillStyle = '#1f2328';
   ctx.lineWidth = getStrokeWidth();
-  drawSmoothPolyline(points);
+  drawPolyline(points);
   drawArrowHead(points[points.length - 2], points[points.length - 1]);
   ctx.restore();
 }
 
-function drawSmoothPolyline(points) {
+function drawPolyline(points) {
   ctx.beginPath();
   ctx.moveTo(points[0].x, points[0].y);
-  if (points.length === 2) {
-    ctx.lineTo(points[1].x, points[1].y);
-    ctx.stroke();
-    return;
+  for (let i = 1; i < points.length; i += 1) {
+    ctx.lineTo(points[i].x, points[i].y);
   }
-
-  let drewBezier = false;
-  for (let i = 1; i + 2 < points.length; i += 3) {
-    const cp1 = points[i];
-    const cp2 = points[i + 1];
-    const end = points[i + 2];
-    ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
-    drewBezier = true;
-  }
-
-  if (!drewBezier) {
-    ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
-  }
-
   ctx.stroke();
 }
 
