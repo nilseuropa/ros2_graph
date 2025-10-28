@@ -13,6 +13,12 @@ const viewState = {
 const VIEW_MIN_SCALE = 0.25;
 const VIEW_MAX_SCALE = 6;
 const ZOOM_SENSITIVITY = 0.0015;
+const BASE_STROKE_WIDTH = 1.5;
+const MIN_STROKE_WIDTH = 0.75;
+const MAX_STROKE_WIDTH = 2.5;
+const DESIRED_LABEL_SCALE = 0.5;
+const MIN_ARROW_HEAD = 4;
+const MAX_ARROW_HEAD = 18;
 let userAdjustedView = false;
 const panState = {
   active: false,
@@ -230,6 +236,90 @@ function scalePointAround(point, origin, factor) {
   };
 }
 
+function isRectangularShape(geometry) {
+  const shape = (geometry?.info?.shape || '').toLowerCase();
+  if (geometry?.type === 'topic') {
+    return true;
+  }
+  return shape === 'box' || shape === 'rectangle' || shape === 'rect' || shape === 'record';
+}
+
+function computeRectangleBoundaryPoint(geometry, targetPoint) {
+  const center = geometry.center;
+  const halfWidth = Math.max(geometry.width / 2, 1);
+  const halfHeight = Math.max(geometry.height / 2, 1);
+  const dx = targetPoint.x - center.x;
+  const dy = targetPoint.y - center.y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
+    return { x: center.x, y: center.y };
+  }
+  let t = Infinity;
+  if (dx !== 0) {
+    t = Math.min(t, halfWidth / Math.abs(dx));
+  }
+  if (dy !== 0) {
+    t = Math.min(t, halfHeight / Math.abs(dy));
+  }
+  if (!Number.isFinite(t) || t <= 0) {
+    t = 1;
+  }
+  return {
+    x: center.x + dx * t,
+    y: center.y + dy * t,
+  };
+}
+
+function computeEllipseBoundaryPoint(geometry, targetPoint) {
+  const center = geometry.center;
+  const rx = Math.max(geometry.width / 2, 1);
+  const ry = Math.max(geometry.height / 2, 1);
+  const dx = targetPoint.x - center.x;
+  const dy = targetPoint.y - center.y;
+  if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) {
+    return { x: center.x + rx, y: center.y };
+  }
+  const length = Math.hypot(dx / rx, dy / ry);
+  if (!Number.isFinite(length) || length === 0) {
+    return { x: center.x + rx, y: center.y };
+  }
+  return {
+    x: center.x + dx / length,
+    y: center.y + dy / length,
+  };
+}
+
+function computeBoundaryPoint(geometry, directionPoint) {
+  if (!geometry || !directionPoint) {
+    return null;
+  }
+  if (isRectangularShape(geometry)) {
+    return computeRectangleBoundaryPoint(geometry, directionPoint);
+  }
+  return computeEllipseBoundaryPoint(geometry, directionPoint);
+}
+
+function adjustEdgePath(points, tailGeometry, headGeometry) {
+  if (!points || points.length < 2) {
+    return points;
+  }
+  const adjusted = points.map(pt => ({ x: pt.x, y: pt.y }));
+  if (tailGeometry) {
+    const reference = adjusted[1] ?? tailGeometry.center;
+    const replacement = computeBoundaryPoint(tailGeometry, reference);
+    if (replacement) {
+      adjusted[0] = replacement;
+    }
+  }
+  if (headGeometry) {
+    const reference = adjusted[adjusted.length - 2] ?? headGeometry.center;
+    const replacement = computeBoundaryPoint(headGeometry, reference);
+    if (replacement) {
+      adjusted[adjusted.length - 1] = replacement;
+    }
+  }
+  return adjusted;
+}
+
 function clamp(value, min, max) {
   if (value < min) {
     return min;
@@ -238,6 +328,11 @@ function clamp(value, min, max) {
     return max;
   }
   return value;
+}
+
+function getStrokeWidth() {
+  const scale = viewState.scale || 1;
+  return clamp(BASE_STROKE_WIDTH / scale, MIN_STROKE_WIDTH, MAX_STROKE_WIDTH);
 }
 
 function getCanvasPoint(event) {
@@ -267,26 +362,48 @@ function computeLayoutOrigin(geometries) {
   return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
 }
 
-function hasOverlapWithFactor(geometries, origin, factor) {
-  const margin = 6;
+function computeSpreadRequirements(geometries) {
+  let overlaps = false;
+  let requiredFactor = 1;
   for (let i = 0; i < geometries.length; i += 1) {
     const a = geometries[i];
-    const centerA = scalePointAround(a.center, origin, factor);
+    const centerA = a.center;
     const halfWidthA = a.width / 2;
     const halfHeightA = a.height / 2;
     for (let j = i + 1; j < geometries.length; j += 1) {
       const b = geometries[j];
-      const centerB = scalePointAround(b.center, origin, factor);
+      const centerB = b.center;
       const halfWidthB = b.width / 2;
       const halfHeightB = b.height / 2;
-      const overlapX = Math.abs(centerA.x - centerB.x) < (halfWidthA + halfWidthB + margin);
-      const overlapY = Math.abs(centerA.y - centerB.y) < (halfHeightA + halfHeightB + margin);
-      if (overlapX && overlapY) {
-        return true;
+      const sizeHint = Math.max(a.width, a.height, b.width, b.height);
+      const margin = 6 + Math.min(24, sizeHint * 0.05);
+      const widthThreshold = halfWidthA + halfWidthB + margin;
+      const heightThreshold = halfHeightA + halfHeightB + margin;
+      const deltaX = Math.abs(centerA.x - centerB.x);
+      const deltaY = Math.abs(centerA.y - centerB.y);
+      const overlapX = deltaX < widthThreshold;
+      const overlapY = deltaY < heightThreshold;
+      if (!overlapX || !overlapY) {
+        continue;
+      }
+      overlaps = true;
+      const candidates = [];
+      if (deltaX > 0) {
+        candidates.push(widthThreshold / deltaX);
+      }
+      if (deltaY > 0) {
+        candidates.push(heightThreshold / deltaY);
+      }
+      if (!candidates.length) {
+        return { overlaps: true, factor: Infinity };
+      }
+      const needed = Math.max(1, Math.min(...candidates));
+      if (Number.isFinite(needed) && needed > requiredFactor) {
+        requiredFactor = needed;
       }
     }
   }
-  return false;
+  return { overlaps, factor: requiredFactor };
 }
 
 function applySpreadAdjustment(nodeGeometry, edgeLookup) {
@@ -296,27 +413,27 @@ function applySpreadAdjustment(nodeGeometry, edgeLookup) {
   }
 
   const origin = computeLayoutOrigin(entries);
-  let factor = 1;
-  const maxFactor = 1.8;
-  const step = 0.05;
-
-  while (factor < maxFactor && hasOverlapWithFactor(entries, origin, factor)) {
-    factor += step;
+  const { overlaps, factor: requiredFactor } = computeSpreadRequirements(entries);
+  if (!overlaps) {
+    return;
   }
 
-  if (factor <= 1.0001 || hasOverlapWithFactor(entries, origin, factor)) {
+  const scaleBoost = Math.max(0, (DESIRED_LABEL_SCALE ?? 1) - 1);
+  const maxFactor = Math.max(3.5, 1 + scaleBoost * 2.4);
+  const safeFactor = Math.min(Math.max(requiredFactor + 0.05, 1.05), maxFactor);
+  if (!Number.isFinite(safeFactor) || safeFactor <= 1.0001) {
     return;
   }
 
   entries.forEach(geom => {
-    geom.center = scalePointAround(geom.center, origin, factor);
+    geom.center = scalePointAround(geom.center, origin, safeFactor);
   });
 
   if (edgeLookup) {
     edgeLookup.forEach(paths => {
       paths.forEach(path => {
         for (let i = 0; i < path.length; i += 1) {
-          path[i] = scalePointAround(path[i], origin, factor);
+          path[i] = scalePointAround(path[i], origin, safeFactor);
         }
       });
     });
@@ -396,6 +513,8 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
   const nodeGeometry = {};
   const missing = [];
   const expectedNames = [...nodeNames, ...topicNames];
+  const topicSet = new Set(topicNames);
+  const geometryEntries = [];
   expectedNames.forEach(name => {
     const nodeInfo = layout.nodes[name];
     if (!nodeInfo) {
@@ -411,31 +530,38 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     const baseHeightPx = Number.isFinite(nodeInfo.height) ? scaler.scaleLength(nodeInfo.height) : 0;
     const fallbackWidthPx = Math.max(metrics.width + 12, 24);
     const fallbackHeightPx = Math.max(metrics.height + 12, 24);
+    let finalWidthPx = baseWidthPx > 0 ? baseWidthPx : fallbackWidthPx;
+    let finalHeightPx = baseHeightPx > 0 ? baseHeightPx : fallbackHeightPx;
 
-    const finalWidthPx = baseWidthPx > 0 ? baseWidthPx : fallbackWidthPx;
-    const finalHeightPx = baseHeightPx > 0 ? baseHeightPx : fallbackHeightPx;
+    const desiredFontScale = DESIRED_LABEL_SCALE;
+    if (metrics.width > 0 && Number.isFinite(desiredFontScale) && desiredFontScale > 0) {
+      const desiredTextWidth = metrics.width * desiredFontScale;
+      finalWidthPx = Math.max(finalWidthPx, desiredTextWidth + 12);
+    }
+    if (metrics.height > 0 && Number.isFinite(desiredFontScale) && desiredFontScale > 0) {
+      const desiredTextHeight = metrics.height * desiredFontScale;
+      finalHeightPx = Math.max(finalHeightPx, desiredTextHeight + 12);
+    }
 
     const availableWidth = Math.max(finalWidthPx - 8, 4);
     const availableHeight = Math.max(finalHeightPx - 8, 4);
-    const widthScale = metrics.width > 0 ? availableWidth / metrics.width : 1;
-    const heightScale = metrics.height > 0 ? availableHeight / metrics.height : 1;
-    const fontScale = Math.min(1, widthScale, heightScale);
+    const widthScale = metrics.width > 0 ? availableWidth / metrics.width : Infinity;
+    const heightScale = metrics.height > 0 ? availableHeight / metrics.height : Infinity;
+    const maxScale = Math.min(widthScale, heightScale);
 
-    const fontSize = BASE_FONT_SIZE * fontScale;
-    const lineHeight = (metrics.lineHeight || BASE_LINE_HEIGHT) * fontScale;
-    const textWidth = metrics.width * fontScale;
-    const paddingX = Math.max((finalWidthPx - textWidth) / 2, 4);
-
-    nodeGeometry[name] = {
+    geometryEntries.push({
+      name,
+      info: nodeInfo,
       center,
+      labelLines,
+      metrics,
       width: finalWidthPx,
       height: finalHeightPx,
-      info: nodeInfo,
-      labelLines,
-      fontSize,
-      lineHeight,
-      paddingX,
-    };
+      availableWidth,
+      availableHeight,
+      maxScale,
+      type: topicSet.has(name) ? 'topic' : 'node',
+    });
   });
 
   if (missing.length) {
@@ -448,6 +574,45 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     return;
   }
 
+  let uniformScale = DESIRED_LABEL_SCALE;
+  let limitingScale = Infinity;
+  geometryEntries.forEach(entry => {
+    if (Number.isFinite(entry.maxScale) && entry.maxScale > 0) {
+      limitingScale = Math.min(limitingScale, entry.maxScale);
+    }
+  });
+  if (Number.isFinite(limitingScale)) {
+    uniformScale = Math.min(uniformScale, limitingScale);
+  }
+  if (!Number.isFinite(uniformScale) || uniformScale <= 0) {
+    if (Number.isFinite(limitingScale) && limitingScale > 0) {
+      uniformScale = limitingScale;
+    } else {
+      uniformScale = 1;
+    }
+  }
+
+  geometryEntries.forEach(entry => {
+    const fontScale = Number.isFinite(entry.maxScale) && entry.maxScale > 0
+      ? Math.min(uniformScale, entry.maxScale)
+      : uniformScale;
+    const fontSize = BASE_FONT_SIZE * fontScale;
+    const lineHeight = (entry.metrics.lineHeight || BASE_LINE_HEIGHT) * fontScale;
+    const textWidth = entry.metrics.width * fontScale;
+    const paddingX = Math.max((entry.width - textWidth) / 2, 4);
+    nodeGeometry[entry.name] = {
+      center: entry.center,
+      width: entry.width,
+      height: entry.height,
+      info: entry.info,
+      labelLines: entry.labelLines,
+      fontSize,
+      lineHeight,
+      paddingX,
+      type: entry.type,
+    };
+  });
+
   const edgeLookup = buildGraphvizEdgeLookup(layout, scaler);
 
   applySpreadAdjustment(nodeGeometry, edgeLookup);
@@ -456,7 +621,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
   ctx.translate(viewState.offsetX, viewState.offsetY);
   ctx.scale(viewState.scale, viewState.scale);
 
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = getStrokeWidth();
   ctx.strokeStyle = '#1f2328';
   ctx.fillStyle = '#1f2328';
 
@@ -483,6 +648,9 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
         { x: width / 2, y: height / 2 },
       ];
     }
+    const tailGeom = nodeGeometry[edge.start];
+    const headGeom = nodeGeometry[edge.end];
+    points = adjustEdgePath(points, tailGeom, headGeom);
     drawEdgeWithPath(points);
   });
 
@@ -582,6 +750,7 @@ function drawEdgeWithPath(points) {
   ctx.save();
   ctx.strokeStyle = '#1f2328';
   ctx.fillStyle = '#1f2328';
+  ctx.lineWidth = getStrokeWidth();
   drawSmoothPolyline(points);
   drawArrowHead(points[points.length - 2], points[points.length - 1]);
   ctx.restore();
@@ -617,7 +786,8 @@ function drawArrowHead(start, end) {
     return;
   }
   const angle = Math.atan2(end.y - start.y, end.x - start.x);
-  const headLen = 9;
+  const scale = viewState.scale || 1;
+  const headLen = clamp(9 / scale, MIN_ARROW_HEAD, MAX_ARROW_HEAD);
   ctx.beginPath();
   ctx.moveTo(end.x, end.y);
   ctx.lineTo(
@@ -727,7 +897,7 @@ function drawNode(name, geometry) {
   const rx = Math.max(width / 2, 4);
   const ry = Math.max(height / 2, 4);
   ctx.save();
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = getStrokeWidth();
   ctx.strokeStyle = info.strokeColor || '#1f2328';
   const fill =
     info.fillColor && info.fillColor !== 'none'
@@ -750,7 +920,7 @@ function drawTopic(name, geometry) {
   const boxWidth = Math.max(width, 12);
   const boxHeight = Math.max(height, 12);
   ctx.save();
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = getStrokeWidth();
   ctx.strokeStyle = info.strokeColor || '#1f2328';
   const fill =
     info.fillColor && info.fillColor !== 'none'
