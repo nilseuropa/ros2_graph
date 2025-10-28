@@ -289,6 +289,23 @@ class GraphBuilder:
                 node_names.add(fq_name)
                 edges.append(Edge(topic_name, fq_name, _format_qos(info.qos_profile)))
 
+        excluded_nodes = {
+            name
+            for name in {
+                self._node.get_fully_qualified_name(),
+                f'/{self._node.get_name()}',
+            }
+            if name
+        }
+
+        if excluded_nodes:
+            node_names.difference_update(excluded_nodes)
+            edges = [
+                edge
+                for edge in edges
+                if edge.start not in excluded_nodes and edge.end not in excluded_nodes
+            ]
+
         return GraphSnapshot(node_names, topics, edges)
 
 
