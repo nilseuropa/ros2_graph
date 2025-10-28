@@ -16,7 +16,6 @@ const ZOOM_SENSITIVITY = 0.0015;
 const BASE_STROKE_WIDTH = 1.5;
 const MIN_STROKE_WIDTH = 0.75;
 const MAX_STROKE_WIDTH = 2.5;
-const DESIRED_LABEL_SCALE = 0.5;
 const SELECT_EDGE_COLOR = '#ff9800';
 const SELECT_NODE_STROKE = '#ff9800';
 const SELECT_NODE_FILL = '#ffe6bf';
@@ -53,6 +52,9 @@ let hoverHighlight = {
 const BASE_FONT_FAMILY = '"Times New Roman", serif';
 const BASE_FONT_SIZE = 14;
 const BASE_LINE_HEIGHT = 18;
+const POINTS_PER_INCH = 72;
+const MIN_FONT_SIZE_PX = 7;
+const BASE_LINE_HEIGHT_RATIO = BASE_LINE_HEIGHT / BASE_FONT_SIZE;
 
 function resetViewState() {
   viewState.scale = 1;
@@ -216,6 +218,13 @@ function parseGraphvizPlain(plainText) {
       const shape = stripQuotes(parts[8] ?? '');
       const strokeColor = stripQuotes(parts[9] ?? '');
       const fillColor = stripQuotes(parts[10] ?? '');
+      let fontSize = undefined;
+      if (parts.length >= 12) {
+        const maybeFontSize = parseFloat(parts[parts.length - 1]);
+        if (!Number.isNaN(maybeFontSize) && maybeFontSize > 0) {
+          fontSize = maybeFontSize;
+        }
+      }
       nodes[name] = {
         x,
         y,
@@ -227,6 +236,7 @@ function parseGraphvizPlain(plainText) {
         shape,
         strokeColor,
         fillColor,
+        fontSize,
       };
     } else if (kind === 'edge' && parts.length >= 4) {
       const tail = stripQuotes(parts[1]);
@@ -292,6 +302,21 @@ function createGraphvizScaler(layout, canvasWidth, canvasHeight) {
       return length * layoutScale * scale;
     },
   };
+}
+
+function computeGraphvizFontSizePx(nodeInfo, scaler) {
+  if (!scaler || typeof scaler.scaleLength !== 'function') {
+    return BASE_FONT_SIZE;
+  }
+  const fontSizePt = Number.isFinite(nodeInfo?.fontSize)
+    ? nodeInfo.fontSize
+    : BASE_FONT_SIZE;
+  const inches = fontSizePt / POINTS_PER_INCH;
+  const pixels = scaler.scaleLength(inches);
+  if (Number.isFinite(pixels) && pixels > 0) {
+    return Math.max(MIN_FONT_SIZE_PX, pixels);
+  }
+  return Math.max(MIN_FONT_SIZE_PX, fontSizePt);
 }
 
 function buildGraphvizEdgeLookup(layout, scaler) {
@@ -744,8 +769,7 @@ function applySpreadAdjustment(nodeGeometry, edgeLookup) {
     return;
   }
 
-  const scaleBoost = Math.max(0, (DESIRED_LABEL_SCALE ?? 1) - 1);
-  const maxFactor = Math.max(3.5, 1 + scaleBoost * 2.4);
+  const maxFactor = 3.5;
   const safeFactor = Math.min(Math.max(requiredFactor + 0.05, 1.05), maxFactor);
   if (!Number.isFinite(safeFactor) || safeFactor <= 1.0001) {
     return;
@@ -903,33 +927,18 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     let finalWidthPx = baseWidthPx > 0 ? baseWidthPx : fallbackWidthPx;
     let finalHeightPx = baseHeightPx > 0 ? baseHeightPx : fallbackHeightPx;
 
-    const desiredFontScale = DESIRED_LABEL_SCALE;
-    if (metrics.width > 0 && Number.isFinite(desiredFontScale) && desiredFontScale > 0) {
-      const desiredTextWidth = metrics.width * desiredFontScale;
-      finalWidthPx = Math.max(finalWidthPx, desiredTextWidth + 12);
-    }
-    if (metrics.height > 0 && Number.isFinite(desiredFontScale) && desiredFontScale > 0) {
-      const desiredTextHeight = metrics.height * desiredFontScale;
-      finalHeightPx = Math.max(finalHeightPx, desiredTextHeight + 12);
-    }
-
     const availableWidth = Math.max(finalWidthPx - 8, 4);
     const availableHeight = Math.max(finalHeightPx - 8, 4);
-    const widthScale = metrics.width > 0 ? availableWidth / metrics.width : Infinity;
-    const heightScale = metrics.height > 0 ? availableHeight / metrics.height : Infinity;
-    const maxScale = Math.min(widthScale, heightScale);
 
     geometryEntries.push({
       name,
       info: nodeInfo,
       center,
       labelLines,
-      metrics,
       width: finalWidthPx,
       height: finalHeightPx,
       availableWidth,
       availableHeight,
-      maxScale,
       type: topicSet.has(name) || (nodeInfo.shape || '').toLowerCase().includes('box') ? 'topic' : 'node',
     });
   });
@@ -948,31 +957,28 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     return;
   }
 
-  let uniformScale = DESIRED_LABEL_SCALE;
-  let limitingScale = Infinity;
   geometryEntries.forEach(entry => {
-    if (Number.isFinite(entry.maxScale) && entry.maxScale > 0) {
-      limitingScale = Math.min(limitingScale, entry.maxScale);
+    let fontSize = computeGraphvizFontSizePx(entry.info, scaler);
+    if (!Number.isFinite(fontSize) || fontSize <= 0) {
+      fontSize = BASE_FONT_SIZE;
     }
-  });
-  if (Number.isFinite(limitingScale)) {
-    uniformScale = Math.min(uniformScale, limitingScale);
-  }
-  if (!Number.isFinite(uniformScale) || uniformScale <= 0) {
-    if (Number.isFinite(limitingScale) && limitingScale > 0) {
-      uniformScale = limitingScale;
-    } else {
-      uniformScale = 1;
+    let lineHeight = Math.max(fontSize * BASE_LINE_HEIGHT_RATIO, fontSize);
+    let labelMetrics = measureLabel(entry.labelLines, fontSize);
+    if (
+      (labelMetrics.width > entry.availableWidth && entry.availableWidth > 0) ||
+      (labelMetrics.height > entry.availableHeight && entry.availableHeight > 0)
+    ) {
+      const widthScale = labelMetrics.width > 0 ? entry.availableWidth / labelMetrics.width : 1;
+      const heightScale = labelMetrics.height > 0 ? entry.availableHeight / labelMetrics.height : 1;
+      const limiter = Math.min(widthScale, heightScale, 1);
+      if (Number.isFinite(limiter) && limiter > 0 && limiter < 1) {
+        fontSize *= limiter;
+        lineHeight *= limiter;
+        labelMetrics = measureLabel(entry.labelLines, fontSize);
+      }
     }
-  }
-
-  geometryEntries.forEach(entry => {
-    const fontScale = Number.isFinite(entry.maxScale) && entry.maxScale > 0
-      ? Math.min(uniformScale, entry.maxScale)
-      : uniformScale;
-    const fontSize = BASE_FONT_SIZE * fontScale;
-    const lineHeight = (entry.metrics.lineHeight || BASE_LINE_HEIGHT) * fontScale;
-    const textWidth = entry.metrics.width * fontScale;
+    lineHeight = labelMetrics.lineHeight ?? lineHeight;
+    const textWidth = labelMetrics.width;
     const paddingX = Math.max((entry.width - textWidth) / 2, 4);
     nodeGeometry[entry.name] = {
       center: entry.center,
@@ -1210,7 +1216,7 @@ function drawEdgeWithPath(points, highlightState) {
   }
   ctx.save();
   const baseStroke = getStrokeWidth();
-  let stroke = '#1f2328';
+  let stroke = '#24303a';
   let width = baseStroke;
   if (highlightState === 'selected') {
     stroke = SELECT_EDGE_COLOR;
@@ -1301,21 +1307,22 @@ function decodeGraphvizLabel(rawLabel, fallbackText, nodeName) {
 
 function measureLabel(lines, fontSize = BASE_FONT_SIZE) {
   ctx.save();
-  ctx.font = `${fontSize}px ${BASE_FONT_FAMILY}`;
+  const effectiveFontSize = Math.max(fontSize, MIN_FONT_SIZE_PX);
+  ctx.font = `${effectiveFontSize}px ${BASE_FONT_FAMILY}`;
   let maxWidth = 0;
   lines.forEach(line => {
     const metrics = ctx.measureText(line.text);
     maxWidth = Math.max(maxWidth, metrics.width);
   });
   ctx.restore();
-  const lineHeight = (fontSize / BASE_FONT_SIZE) * BASE_LINE_HEIGHT;
+  const lineHeight = effectiveFontSize * BASE_LINE_HEIGHT_RATIO;
   const height = Math.max(lines.length * lineHeight, lineHeight);
   return { width: maxWidth, height, lineHeight };
 }
 
 function drawGraphvizLabel(lines, center, boxWidth, options) {
-  const fontSize = options.fontSize || BASE_FONT_SIZE;
-  const lineHeight = options.lineHeight || (fontSize / BASE_FONT_SIZE) * BASE_LINE_HEIGHT;
+  const fontSize = Math.max(options.fontSize || BASE_FONT_SIZE, MIN_FONT_SIZE_PX);
+  const lineHeight = options.lineHeight ?? fontSize * BASE_LINE_HEIGHT_RATIO;
   const paddingX = options.paddingX;
   ctx.save();
   ctx.font = `${fontSize}px ${BASE_FONT_FAMILY}`;
