@@ -16,7 +16,7 @@ const ZOOM_SENSITIVITY = 0.0015;
 const BASE_STROKE_WIDTH = 1.5;
 const MIN_STROKE_WIDTH = 0.75;
 const MAX_STROKE_WIDTH = 2.5;
-const DESIRED_LABEL_SCALE = 1.0;
+const DESIRED_LABEL_SCALE = 0.5;
 const HIGHLIGHT_EDGE_COLOR = '#ff9800';
 const HIGHLIGHT_NODE_STROKE = '#ff9800';
 const HIGHLIGHT_NODE_FILL = '#ffe6bf';
@@ -799,6 +799,29 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     return;
   }
 
+  const idMap = graph.graphviz?.ids || {};
+  const reverseIdMap = {};
+  Object.keys(idMap).forEach(actualName => {
+    const graphvizId = idMap[actualName];
+    if (graphvizId) {
+      reverseIdMap[graphvizId] = actualName;
+    }
+  });
+
+  if (Object.keys(reverseIdMap).length) {
+    const remappedNodes = {};
+    Object.entries(layout.nodes).forEach(([graphvizId, info]) => {
+      const actual = reverseIdMap[graphvizId] ?? graphvizId;
+      remappedNodes[actual] = info;
+    });
+    layout.nodes = remappedNodes;
+    layout.edges = layout.edges.map(edge => ({
+      tail: reverseIdMap[edge.tail] ?? edge.tail,
+      head: reverseIdMap[edge.head] ?? edge.head,
+      points: edge.points,
+    }));
+  }
+
   const scaler = createGraphvizScaler(layout, width, height);
   if (!scaler) {
     currentScene = {
@@ -815,17 +838,9 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
   }
 
   const nodeGeometry = {};
-  const missing = [];
-  const expectedNames = [...nodeNames, ...topicNames];
   const topicSet = new Set(topicNames);
   const geometryEntries = [];
-  expectedNames.forEach(name => {
-    const nodeInfo = layout.nodes[name];
-    if (!nodeInfo) {
-      missing.push(name);
-      return;
-    }
-
+  Object.entries(layout.nodes).forEach(([name, nodeInfo]) => {
     const center = scaler.toCanvas(nodeInfo);
     const labelLines = decodeGraphvizLabel(nodeInfo.rawLabel, nodeInfo.label || name, name);
     const metrics = measureLabel(labelLines);
@@ -864,11 +879,11 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       availableWidth,
       availableHeight,
       maxScale,
-      type: topicSet.has(name) ? 'topic' : 'node',
+      type: topicSet.has(name) || (nodeInfo.shape || '').toLowerCase().includes('box') ? 'topic' : 'node',
     });
   });
 
-  if (missing.length) {
+  if (!geometryEntries.length) {
     currentScene = {
       nodes: new Map(),
       edges: [],
@@ -877,7 +892,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Layout missing nodes: ' + missing.slice(0, 3).join(', '), width / 2, height / 2);
+    ctx.fillText('GraphViz layout empty', width / 2, height / 2);
     ctx.restore();
     return;
   }

@@ -12,6 +12,16 @@ from rclpy.qos import QoSProfile
 from .web import GraphWebServer
 
 
+CLUSTER_NAMESPACE_LEVEL = 0
+GROUP_TF_NODES = True
+GROUP_IMAGE_NODES = True
+ACCUMULATE_ACTIONS = True
+HIDE_DYNAMIC_RECONFIGURE = True
+HIDE_SINGLE_CONNECTION_TOPICS = False
+HIDE_DEAD_END_TOPICS = False
+HIDE_TF_NODES = False
+
+
 @dataclass(frozen=True)
 class Edge:
     """Simple directed edge connecting ROS nodes and topics."""
@@ -58,90 +68,178 @@ class GraphSnapshot:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), indent=2, sort_keys=True)
 
-    def to_dot(self) -> str:
-        """Return GraphViz DOT source with additional layout hints."""
-        node_publish_topics: Dict[str, Set[str]] = defaultdict(set)
-        node_subscribe_topics: Dict[str, Set[str]] = defaultdict(set)
-        topic_publishers: Dict[str, Set[str]] = defaultdict(set)
-        topic_subscribers: Dict[str, Set[str]] = defaultdict(set)
+    @staticmethod
+    def _make_safe_identifier(name: str, prefix: str, used: Set[str]) -> str:
+        stripped = name.strip()
+        if not stripped:
+            stripped = 'root'
+        safe_chars = []
+        for char in stripped:
+            if char.isalnum():
+                safe_chars.append(char)
+            else:
+                safe_chars.append('_')
+        base = ''.join(safe_chars) or 'item'
+        candidate = f'{prefix}{base}'
+        counter = 1
+        while candidate in used:
+            candidate = f'{prefix}{base}_{counter}'
+            counter += 1
+        used.add(candidate)
+        return candidate
+
+    def _compute_graphviz_artifacts(self) -> Tuple[str, Dict[str, str]]:
+        if hasattr(self, '_graphviz_cache'):
+            cached = getattr(self, '_graphviz_cache')
+            if cached is not None:
+                return cached
+        try:
+            from rqt_graph.dotcode import RosGraphDotcodeGenerator, NODE_TOPIC_GRAPH, _conv
+            from qt_dotgraph.pydotfactory import PydotFactory
+            from rqt_graph import rosgraph2_impl
+        except Exception:
+            cache_value = self._compute_simple_graphviz_artifacts()
+            setattr(self, '_graphviz_cache', cache_value)
+            return cache_value
+
+        class _GraphAdapter:
+            def __init__(self) -> None:
+                self.nn_nodes: Set[str] = set()
+                self.nt_nodes: Set[str] = set()
+                self.nt_edges = rosgraph2_impl.EdgeList()
+                self.nt_all_edges = rosgraph2_impl.EdgeList()
+                self.nn_edges = rosgraph2_impl.EdgeList()
+                self.topic_with_qos_incompatibility = defaultdict(lambda: defaultdict(list))
+                self.topic_with_type_incompatibility = defaultdict(lambda: defaultdict(list))
+                self.bad_nodes: Dict[str, object] = {}
+
+        graph_adapter = _GraphAdapter()
+        graph_adapter.nn_nodes = set(self.nodes)
+
+        publishers: Dict[str, Set[str]] = defaultdict(set)
+        subscribers: Dict[str, Set[str]] = defaultdict(set)
 
         for edge in self.edges:
             if edge.start in self.nodes and edge.end in self.topics:
-                node_publish_topics[edge.start].add(edge.end)
-                topic_publishers[edge.end].add(edge.start)
+                publishers[edge.end].add(edge.start)
             elif edge.start in self.topics and edge.end in self.nodes:
-                node_subscribe_topics[edge.end].add(edge.start)
-                topic_subscribers[edge.start].add(edge.end)
+                subscribers[edge.start].add(edge.end)
 
-        source_nodes = sorted(
-            node
-            for node in self.nodes
-            if node_publish_topics[node] and not node_subscribe_topics[node]
+        for topic in self.topics.keys():
+            topic_node = rosgraph2_impl.topic_node(topic)
+            graph_adapter.nt_nodes.add(topic_node)
+
+        for topic, pubs in publishers.items():
+            topic_node = rosgraph2_impl.topic_node(topic)
+            for pub in pubs:
+                graph_adapter.nt_edges.add_edges(pub, topic_node, 'o', label=topic, qos=None)
+                graph_adapter.nt_all_edges.add_edges(pub, topic_node, 'o', label=topic, qos=None)
+
+        for topic, subs in subscribers.items():
+            topic_node = rosgraph2_impl.topic_node(topic)
+            for sub in subs:
+                graph_adapter.nt_edges.add_edges(sub, topic_node, 'i', label=topic, qos=None)
+                graph_adapter.nt_all_edges.add_edges(sub, topic_node, 'i', label=topic, qos=None)
+
+        nn_edges = rosgraph2_impl.EdgeList()
+        for topic, pubs in publishers.items():
+            subs = subscribers.get(topic, set())
+            for pub in pubs:
+                for sub in subs:
+                    nn_edges.add_edges(pub, sub, 'o', label=topic, qos=None)
+        graph_adapter.nn_edges = nn_edges
+
+        factory = PydotFactory()
+        generator = RosGraphDotcodeGenerator('ros2_graph_web')
+        dot_source = generator.generate_dotcode(
+            rosgraphinst=graph_adapter,
+            ns_filter='',
+            topic_filter='',
+            graph_mode=NODE_TOPIC_GRAPH,
+            dotcode_factory=factory,
+            hide_single_connection_topics=HIDE_SINGLE_CONNECTION_TOPICS,
+            hide_dead_end_topics=HIDE_DEAD_END_TOPICS,
+            cluster_namespaces_level=CLUSTER_NAMESPACE_LEVEL,
+            accumulate_actions=ACCUMULATE_ACTIONS,
+            orientation='LR',
+            rank='same',
+            ranksep=0.2,
+            rankdir='TB',
+            simplify=False,
+            quiet=False,
+            unreachable=False,
+            hide_tf_nodes=HIDE_TF_NODES,
+            group_tf_nodes=GROUP_TF_NODES,
+            group_image_nodes=GROUP_IMAGE_NODES,
+            hide_dynamic_reconfigure=HIDE_DYNAMIC_RECONFIGURE,
         )
-        sink_nodes = sorted(
-            node
-            for node in self.nodes
-            if node_subscribe_topics[node] and not node_publish_topics[node]
-        )
-        topic_names = sorted(self.topics.keys())
+
+        id_map: Dict[str, str] = {}
+        for node in sorted(self.nodes):
+            id_map[node] = factory.escape_name(_conv(node))
+        for topic in sorted(self.topics.keys()):
+            topic_node = rosgraph2_impl.topic_node(topic)
+            id_map[topic] = factory.escape_name(_conv(topic_node))
+
+        cache_value = (dot_source, id_map)
+        setattr(self, '_graphviz_cache', cache_value)
+        return cache_value
+
+    def _compute_simple_graphviz_artifacts(self) -> Tuple[str, Dict[str, str]]:
+        used_ids: Set[str] = set()
+        id_map: Dict[str, str] = {}
+        for node in sorted(self.nodes):
+            id_map[node] = self._make_safe_identifier(node, 'n_', used_ids)
+        for topic in sorted(self.topics.keys()):
+            id_map[topic] = self._make_safe_identifier(topic, 't_', used_ids)
+
+        def escape_label(value: str) -> str:
+            return value.replace('"', '\\"')
+
+        def topic_label(name: str) -> str:
+            types = self.topics.get(name, ())
+            if not types:
+                return name
+            type_lines = '\\n'.join(types)
+            return f'{name}\\n{type_lines}'
 
         lines: List[str] = [
             'digraph ros2_graph {',
-            '  rankdir=LR;',
-            '  graph [splines=ortho, overlap=false, ranksep=1.2, nodesep=0.8];',
-            '  node [fontsize=14];',
-            '  edge [fontsize=12];',
+            '  graph [rankdir=LR];',
+            '  node [fontsize=12];',
+            '  edge [fontsize=10];',
         ]
 
         for node in sorted(self.nodes):
-            lines.append(f'  "{node}" [shape=ellipse];')
-
-        for topic in topic_names:
-            types = self.topics[topic]
-            type_label = '\\n'.join(types)
-            label = topic if not type_label else f'{topic}\\n{type_label}'
-            safe_label = label.replace('"', '\\"')
-            lines.append(f'  "{topic}" [shape=box,style=rounded,label="{safe_label}"];')
-
-        if source_nodes:
-            quoted = ' '.join(f'"{node}"' for node in source_nodes)
-            lines.append(f'  {{ rank = min; {quoted}; }}')
-
-        if sink_nodes:
-            quoted = ' '.join(f'"{node}"' for node in sink_nodes)
-            lines.append(f'  {{ rank = max; {quoted}; }}')
-
-        if topic_names:
-            quoted = ' '.join(f'"{topic}"' for topic in topic_names)
-            lines.append(f'  {{ rank = same; {quoted}; }}')
-
-        for topic in topic_names:
-            publishers = sorted(topic_publishers.get(topic, []))
-            subscribers = sorted(topic_subscribers.get(topic, []))
-            for first, second in zip(publishers, publishers[1:]):
-                lines.append(
-                    f'  "{first}" -> "{second}" [style=invis, weight=1.5, constraint=true];'
-                )
-            for first, second in zip(subscribers, subscribers[1:]):
-                lines.append(
-                    f'  "{first}" -> "{second}" [style=invis, weight=1.5, constraint=true];'
-                )
-            if publishers and subscribers:
-                lines.append(
-                    f'  "{publishers[-1]}" -> "{subscribers[0]}" '
-                    '[style=invis, weight=0.5, constraint=true];'
-                )
+            lines.append(f'  {id_map[node]} [shape=ellipse,label="{escape_label(node)}"];')
+        for topic in sorted(self.topics.keys()):
+            lines.append(
+                f'  {id_map[topic]} [shape=box,style=rounded,label="{escape_label(topic_label(topic))}"];'
+            )
 
         for edge in self.edges:
+            start_id = id_map.get(edge.start)
+            end_id = id_map.get(edge.end)
+            if not start_id or not end_id:
+                continue
             attributes: List[str] = ['weight=2']
             if edge.qos_label:
-                safe_qos = edge.qos_label.replace('"', '\\"')
-                attributes.append(f'label="{safe_qos}"')
+                attributes.append(f'label="{escape_label(edge.qos_label)}"')
             attr_str = f" [{', '.join(attributes)}]" if attributes else ''
-            lines.append(f'  "{edge.start}" -> "{edge.end}"{attr_str};')
+            lines.append(f'  {start_id} -> {end_id}{attr_str};')
 
         lines.append('}')
-        return '\n'.join(lines)
+        dot_source = '\n'.join(lines)
+        return dot_source, id_map
+
+    def graphviz_id_map(self) -> Dict[str, str]:
+        _, id_map = self._compute_graphviz_artifacts()
+        return dict(id_map)
+
+    def to_dot(self) -> str:
+        """Return GraphViz DOT source with additional layout hints."""
+        dot_source, _ = self._compute_graphviz_artifacts()
+        return dot_source
 
     def to_adjacency(self) -> str:
         """Return a simple adjacency-list text format."""

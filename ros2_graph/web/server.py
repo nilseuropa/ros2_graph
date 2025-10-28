@@ -74,12 +74,16 @@ class GraphWebServer:
 
     def publish(self, snapshot: 'GraphSnapshot', fingerprint: str) -> None:
         graph_dict = snapshot.to_dict()
+        graphviz_ids = snapshot.graphviz_id_map()
         plain_layout = self._compute_graphviz_plain(snapshot)
+        graphviz_info = {}
         if plain_layout is not None:
-            graph_dict['graphviz'] = {
-                'engine': 'dot',
-                'plain': plain_layout,
-            }
+            graphviz_info['engine'] = 'dot'
+            graphviz_info['plain'] = plain_layout
+        if graphviz_ids:
+            graphviz_info['ids'] = graphviz_ids
+        if graphviz_info:
+            graph_dict['graphviz'] = graphviz_info
         payload = {
             'fingerprint': fingerprint,
             'generated_at': time.time(),
