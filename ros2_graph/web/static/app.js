@@ -4,9 +4,34 @@ const metaEl = document.getElementById('meta');
 const statusEl = document.getElementById('status');
 const refreshBtn = document.getElementById('refreshBtn');
 let lastGraph = null;
+let lastFingerprint = null;
+const viewState = {
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0,
+};
+const VIEW_MIN_SCALE = 0.25;
+const VIEW_MAX_SCALE = 6;
+const ZOOM_SENSITIVITY = 0.0015;
+let userAdjustedView = false;
+const panState = {
+  active: false,
+  pointerId: null,
+  lastX: 0,
+  lastY: 0,
+};
 const BASE_FONT_FAMILY = '"Times New Roman", serif';
 const BASE_FONT_SIZE = 14;
 const BASE_LINE_HEIGHT = 18;
+
+function resetViewState() {
+  viewState.scale = 1;
+  viewState.offsetX = 0;
+  viewState.offsetY = 0;
+  userAdjustedView = false;
+}
+
+resetViewState();
 
 function stripQuotes(value) {
   if (!value) {
@@ -205,6 +230,26 @@ function scalePointAround(point, origin, factor) {
   };
 }
 
+function clamp(value, min, max) {
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
+}
+
+function getCanvasPoint(event) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = rect.width ? canvas.width / rect.width : 1;
+  const scaleY = rect.height ? canvas.height / rect.height : 1;
+  return {
+    x: (event.clientX - rect.left) * scaleX,
+    y: (event.clientY - rect.top) * scaleY,
+  };
+}
+
 function computeLayoutOrigin(geometries) {
   let minX = Infinity;
   let maxX = -Infinity;
@@ -282,16 +327,32 @@ function resizeCanvas() {
   const headerHeight = document.querySelector('header').offsetHeight;
   canvas.width = window.innerWidth;
   canvas.height = Math.max(240, window.innerHeight - headerHeight - 40);
-  renderGraph(lastGraph);
+  renderGraph(lastGraph, lastFingerprint);
 }
 
 window.addEventListener('resize', resizeCanvas);
 refreshBtn.addEventListener('click', fetchGraph);
+canvas.addEventListener('wheel', handleWheel, { passive: false });
+canvas.addEventListener('pointerdown', handlePointerDown);
+canvas.addEventListener('pointermove', handlePointerMove);
+canvas.addEventListener('pointerup', handlePointerUp);
+canvas.addEventListener('pointercancel', handlePointerCancel);
+canvas.addEventListener('pointerleave', handlePointerCancel);
 
-function renderGraph(graph) {
+function renderGraph(graph, fingerprint = lastFingerprint) {
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
   if (!graph) {
     return;
+  }
+
+  if (fingerprint !== undefined && fingerprint !== null) {
+    if (fingerprint !== lastFingerprint && !userAdjustedView) {
+      resetViewState();
+    }
+    lastFingerprint = fingerprint;
   }
 
   lastGraph = graph;
@@ -391,6 +452,10 @@ function renderGraph(graph) {
 
   applySpreadAdjustment(nodeGeometry, edgeLookup);
 
+  ctx.save();
+  ctx.translate(viewState.offsetX, viewState.offsetY);
+  ctx.scale(viewState.scale, viewState.scale);
+
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = '#1f2328';
   ctx.fillStyle = '#1f2328';
@@ -423,6 +488,91 @@ function renderGraph(graph) {
 
   nodeNames.forEach(name => drawNode(name, nodeGeometry[name]));
   topicNames.forEach(name => drawTopic(name, nodeGeometry[name]));
+  ctx.restore();
+}
+
+function handleWheel(event) {
+  if (!lastGraph) {
+    return;
+  }
+  event.preventDefault();
+  const point = getCanvasPoint(event);
+  const delta = -event.deltaY;
+  const factor = Math.exp(delta * ZOOM_SENSITIVITY);
+  if (!Number.isFinite(factor) || factor <= 0) {
+    return;
+  }
+  const targetScale = clamp(viewState.scale * factor, VIEW_MIN_SCALE, VIEW_MAX_SCALE);
+  if (Math.abs(targetScale - viewState.scale) < 1e-6) {
+    return;
+  }
+  const baseX = (point.x - viewState.offsetX) / viewState.scale;
+  const baseY = (point.y - viewState.offsetY) / viewState.scale;
+  viewState.scale = targetScale;
+  viewState.offsetX = point.x - baseX * targetScale;
+  viewState.offsetY = point.y - baseY * targetScale;
+  userAdjustedView = true;
+  renderGraph(lastGraph, lastFingerprint);
+}
+
+function handlePointerDown(event) {
+  if (event.button !== 0 || !lastGraph) {
+    return;
+  }
+  event.preventDefault();
+  const point = getCanvasPoint(event);
+  panState.active = true;
+  panState.pointerId = event.pointerId;
+  panState.lastX = point.x;
+  panState.lastY = point.y;
+  userAdjustedView = true;
+  try {
+    canvas.setPointerCapture(event.pointerId);
+  } catch (err) {
+    // Ignore errors from pointer capture on unsupported browsers.
+  }
+}
+
+function handlePointerMove(event) {
+  if (!panState.active || event.pointerId !== panState.pointerId || !lastGraph) {
+    return;
+  }
+  event.preventDefault();
+  const point = getCanvasPoint(event);
+  const dx = point.x - panState.lastX;
+  const dy = point.y - panState.lastY;
+  if (dx === 0 && dy === 0) {
+    return;
+  }
+  panState.lastX = point.x;
+  panState.lastY = point.y;
+  viewState.offsetX += dx;
+  viewState.offsetY += dy;
+  renderGraph(lastGraph, lastFingerprint);
+}
+
+function endPan(pointerId) {
+  if (!panState.active || panState.pointerId !== pointerId) {
+    return;
+  }
+  panState.active = false;
+  panState.pointerId = null;
+  try {
+    canvas.releasePointerCapture(pointerId);
+  } catch (err) {
+    // Ignore release errors when capture was not set.
+  }
+}
+
+function handlePointerUp(event) {
+  if (panState.active && event.pointerId === panState.pointerId) {
+    event.preventDefault();
+  }
+  endPan(event.pointerId);
+}
+
+function handlePointerCancel(event) {
+  endPan(event.pointerId);
 }
 
 function drawEdgeWithPath(points) {
@@ -647,7 +797,7 @@ async function fetchGraph() {
       ' | layout: ' + layoutEngine +
       ' | fingerprint: ' + payload.fingerprint;
     statusEl.textContent = 'Last update: ' + new Date(payload.generated_at * 1000).toLocaleTimeString();
-    renderGraph(graph);
+    renderGraph(graph, payload.fingerprint);
   } catch (err) {
     statusEl.textContent = 'Error fetching data: ' + err.message;
   } finally {
