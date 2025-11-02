@@ -52,6 +52,7 @@ let hoverHighlight = {
   edges: new Set(),
 };
 let nodeDescriptions = new Map();
+const nodeFeatureInfo = new Map();
 const overlayState = {
   visible: false,
   nodeName: '',
@@ -185,6 +186,14 @@ const OVERLAY_PADDING = 12;
 const OVERLAY_MAX_WIDTH = 320;
 const OVERLAY_MARGIN = 12;
 const TOPIC_TOOL_TIMEOUT = 15000;
+const FEATURE_PARAM_ORDER = ['name', 'class', 'version', 'gui_version', 'state'];
+const FEATURE_LABELS = {
+  name: 'Name',
+  class: 'Class',
+  version: 'Version',
+  gui_version: 'GUI Version',
+  state: 'State',
+};
 
 function resetViewState() {
   viewState.scale = 1;
@@ -723,8 +732,16 @@ async function handleContextMenuAction(action, target) {
     }
 
     if (action === 'info') {
-      showOverlayForNode(target.nodeName, nodeGeometry);
+      const cachedFeatureTable = nodeFeatureInfo.get(target.nodeName);
+      if (cachedFeatureTable) {
+        showOverlayWithTables(target.nodeName, cachedFeatureTable);
+      } else {
+        showOverlayForNode(target.nodeName, nodeGeometry);
+      }
       statusEl.textContent = `Details shown for ${target.nodeName}`;
+      if (!nodeFeatureInfo.has(target.nodeName)) {
+        void enrichNodeInfoOverlay(target.nodeName);
+      }
       return;
     }
 
@@ -1066,6 +1083,98 @@ function showNodeServicesOverlay(nodeName, payload) {
   statusEl.textContent = `Services for ${nodeName}: ${count} found`;
 }
 
+function updateNodeFeatureInfoFromParameters(nodeName, parameters) {
+  if (!nodeName) {
+    return null;
+  }
+  const featureMap = new Map();
+  const entries = Array.isArray(parameters) ? parameters : [];
+  entries.forEach(entry => {
+    const paramName = entry?.name;
+    if (typeof paramName !== 'string') {
+      return;
+    }
+    const match = paramName.match(/^feature(?:\.([^.]+))?\.(name|class|version|gui_version|state)$/i);
+    if (!match) {
+      return;
+    }
+    const featureKey = match[1] ? match[1] : '';
+    const field = match[2].toLowerCase();
+    if (!FEATURE_PARAM_ORDER.includes(field)) {
+      return;
+    }
+    if (!featureMap.has(featureKey)) {
+      featureMap.set(featureKey, new Map());
+    }
+    const value = entry?.value !== undefined ? String(entry.value) : '';
+    featureMap.get(featureKey).set(field, value);
+  });
+
+  const tables = [];
+  const keys = Array.from(featureMap.keys()).sort((a, b) => a.localeCompare(b));
+  keys.forEach(key => {
+    const fieldMap = featureMap.get(key);
+    if (!fieldMap) {
+      return;
+    }
+    const rows = [];
+    FEATURE_PARAM_ORDER.forEach(field => {
+      if (!fieldMap.has(field)) {
+        return;
+      }
+      const label = FEATURE_LABELS[field] || field;
+      rows.push([label, fieldMap.get(field)]);
+    });
+    if (!rows.length) {
+      return;
+    }
+    const title = key ? `Feature: ${key}` : 'Feature';
+    tables.push({
+      title,
+      headers: ['Field', 'Value'],
+      rows,
+    });
+  });
+
+  if (!tables.length) {
+    nodeFeatureInfo.delete(nodeName);
+    return null;
+  }
+
+  const data = {
+    titleLines: buildNodeTitleLines(nodeName),
+    tables,
+  };
+  nodeFeatureInfo.set(nodeName, data);
+  return data;
+}
+
+async function enrichNodeInfoOverlay(nodeName) {
+  if (!nodeName || !overlayState.visible || overlayState.nodeName !== nodeName) {
+    return;
+  }
+  if (nodeFeatureInfo.has(nodeName)) {
+    const cached = nodeFeatureInfo.get(nodeName);
+    if (cached && overlayState.visible && overlayState.nodeName === nodeName) {
+      showOverlayWithTables(nodeName, cached);
+    }
+    return;
+  }
+
+  try {
+    const payload = await requestNodeTool('parameters', nodeName);
+    const tableData = updateNodeFeatureInfoFromParameters(nodeName, payload?.parameters);
+    if (tableData && overlayState.visible && overlayState.nodeName === nodeName) {
+      showOverlayWithTables(nodeName, tableData);
+      statusEl.textContent = `Details shown for ${nodeName}`;
+    }
+  } catch (err) {
+    if (typeof console !== 'undefined') {
+      console.debug('Failed to enrich node info overlay', err);
+    }
+  }
+}
+
 function showNodeParametersOverlay(nodeName, payload) {
   if (!payload || typeof payload !== 'object') {
     statusEl.textContent = `No data returned for parameters on ${nodeName}`;
@@ -1107,6 +1216,7 @@ function showNodeParametersOverlay(nodeName, payload) {
     });
   }
 
+  updateNodeFeatureInfoFromParameters(nodeName, payload.parameters);
   statusEl.textContent = `Parameters for ${nodeName}: ${count} found`;
 }
 
@@ -1301,6 +1411,15 @@ function drawOverlayTextbox(anchorPoint, nodeName, description) {
     overlayCtx.fillStyle = idx === 0 ? '#58a6ff' : '#e6edf3';
     overlayCtx.fillText(line, textX, textY);
   });
+  overlayState.layout = {
+    box: {
+      x: boxX,
+      y: boxY,
+      width: boxWidth,
+      height: boxHeight,
+    },
+    tables: [],
+  };
   overlayCtx.restore();
 }
 
@@ -2052,7 +2171,7 @@ function splitNodeName(nodeName) {
   return { namespace, basename };
 }
 
-function buildDefaultNodeDescription(nodeName) {
+function buildNodeTitleLines(nodeName) {
   const parts = splitNodeName(nodeName);
   const lines = [`Node: ${nodeName}`];
   if (parts.basename && parts.basename !== nodeName) {
@@ -2060,12 +2179,17 @@ function buildDefaultNodeDescription(nodeName) {
   }
   if (parts.namespace && parts.namespace !== nodeName) {
     lines.push(`Namespace: ${parts.namespace}`);
-  } else if (!parts.namespace) {
+  } else if (!parts.namespace || parts.namespace === nodeName) {
     lines.push('Namespace: /');
   }
   if (lines.length === 1) {
     lines.push('Namespace: /');
   }
+  return lines;
+}
+
+function buildDefaultNodeDescription(nodeName) {
+  const lines = buildNodeTitleLines(nodeName);
   lines.push('');
   lines.push('No description available.');
   return lines.join('\n');
@@ -2173,6 +2297,12 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
 
   lastGraph = graph;
   nodeDescriptions = buildNodeDescriptions(graph);
+  const availableNodes = new Set(graph.nodes || []);
+  for (const key of Array.from(nodeFeatureInfo.keys())) {
+    if (!availableNodes.has(key)) {
+      nodeFeatureInfo.delete(key);
+    }
+  }
   const width = canvas.width;
   const height = canvas.height;
   const nodeNames = (graph.nodes || []).filter(name => !isHiddenGraphName(name));
