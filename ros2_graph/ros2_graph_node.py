@@ -335,6 +335,21 @@ def _fully_qualified_node_name(namespace: str, node_name: str) -> str:
     return f'{namespace}/{node_name}'.replace('//', '/')
 
 
+def _split_node_fqn(node_name: str) -> Tuple[str, str]:
+    name = node_name or ''
+    if not name.startswith('/'):
+        name = '/' + name if name else '/'
+    if name == '/':
+        return '/', ''
+    namespace, _, base = name.rpartition('/')
+    if not namespace:
+        namespace = '/'
+    base = base or namespace.strip('/') or ''
+    if not base:
+        base = name.lstrip('/') or name or ''
+    return namespace or '/', base
+
+
 def _format_qos(profile: QoSProfile | None) -> str:
     if profile is None:
         return ''
@@ -381,6 +396,7 @@ class Ros2GraphNode(Node):
                     port,
                     self.get_logger(),
                     topic_tool_handler=self._handle_topic_tool_request,
+                    node_tool_handler=self._handle_node_tool_request,
                 )
                 self._web_server.start()
             except OSError as exc:
@@ -468,6 +484,42 @@ class Ros2GraphNode(Node):
         metrics['action'] = action
         metrics['topic'] = topic
         return 200, metrics
+
+    def _handle_node_tool_request(self, action: str, node_name: str) -> Tuple[int, Dict[str, object]]:
+        action = (action or '').lower()
+        if action not in {'services'}:
+            return 400, {'error': f"unsupported action '{action}'"}
+
+        snapshot = self._last_snapshot
+        if snapshot is None:
+            return 503, {'error': 'graph not ready yet'}
+
+        if node_name not in snapshot.nodes:
+            return 404, {'error': f"node '{node_name}' not found"}
+
+        namespace, base = _split_node_fqn(node_name)
+        try:
+            entries = self.get_service_names_and_types_by_node(base, namespace)
+        except Exception as exc:  # pragma: no cover - defensive
+            self.get_logger().warning('Failed to fetch services for %s: %s', node_name, exc)
+            return 500, {'error': str(exc)}
+
+        services = [
+            {
+                'name': service_name,
+                'types': list(types),
+            }
+            for service_name, types in sorted(entries, key=lambda item: item[0])
+        ]
+
+        return 200, {
+            'action': action,
+            'node': node_name,
+            'namespace': namespace,
+            'base': base,
+            'services': services,
+            'count': len(services),
+        }
 
     def _build_topic_info_payload(
         self,

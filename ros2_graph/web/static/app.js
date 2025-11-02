@@ -57,12 +57,14 @@ const overlayState = {
   nodeName: '',
   description: '',
   auto: false,
+  maxWidth: 0,
 };
 const contextMenu = document.getElementById('contextMenu');
 const contextMenuState = {
   visible: false,
   target: null,
   position: { x: 0, y: 0 },
+  items: [],
 };
 const canvasContainer = document.getElementById('canvasContainer');
 const BASE_FONT_FAMILY = '"Times New Roman", serif';
@@ -143,6 +145,47 @@ function formatBytesPerSecond(value) {
   return value.toFixed(0) + ' B/s';
 }
 
+function getContextMenuItemsForTarget(target) {
+  if (!target) {
+    return [];
+  }
+  if (target.type === 'topic-edge' || target.type === 'topic-node') {
+    return [
+      { action: 'info', label: 'Info' },
+      { action: 'stats', label: 'Stats' },
+    ];
+  }
+  if (target.type === 'node') {
+    return [
+      { action: 'info', label: 'Info' },
+      { action: 'services', label: 'Services' },
+      { action: 'parameters', label: 'Parameters' },
+    ];
+  }
+  return [];
+}
+
+function configureContextMenu(target) {
+  if (!contextMenu) {
+    return false;
+  }
+  const items = getContextMenuItemsForTarget(target);
+  if (!items.length) {
+    contextMenuState.items = [];
+    return false;
+  }
+  contextMenu.innerHTML = '';
+  items.forEach(item => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.action = item.action;
+    button.textContent = item.label;
+    contextMenu.appendChild(button);
+  });
+  contextMenuState.items = items;
+  return true;
+}
+
 function clearOverlayCanvas() {
   overlayCtx.save();
   overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
@@ -159,6 +202,7 @@ function hideOverlay() {
   overlayState.nodeName = '';
   overlayState.description = '';
   overlayState.auto = false;
+  overlayState.maxWidth = 0;
   clearOverlayCanvas();
 }
 
@@ -171,10 +215,14 @@ function hideContextMenu() {
   if (contextMenu) {
     contextMenu.classList.remove('visible');
   }
+  contextMenuState.items = [];
 }
 
 function showContextMenu(clientPoint, target) {
   if (!contextMenu) {
+    return;
+  }
+  if (!configureContextMenu(target)) {
     return;
   }
   contextMenuState.visible = true;
@@ -215,51 +263,106 @@ function showContextMenu(clientPoint, target) {
 
 async function handleContextMenuAction(action, target) {
   hideContextMenu();
-  if (!target || (target.type !== 'topic-edge' && target.type !== 'topic-node')) {
-    return;
-  }
-  const topicGeometry = currentScene.nodes?.get(target.topicName);
-  if (!topicGeometry) {
-    statusEl.textContent = `Topic ${target.topicName} not visible in current layout`;
+  if (!target) {
     return;
   }
 
-  if (action === 'info') {
-    showOverlayForNode(target.topicName, topicGeometry);
-    const peerInfo = target.peerName ? ` (connection with ${target.peerName})` : '';
-    statusEl.textContent = `Details shown for ${target.topicName}${peerInfo}`;
-    return;
-  }
-
-  if (action !== 'stats') {
-    statusEl.textContent = `Unsupported topic action: ${action}`;
-    return;
-  }
-
-  const peerInfo = target.peerName ? ` ↔ ${target.peerName}` : '';
-  const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
-  const measuringText =
-    `Topic: ${target.topicName}\n` +
-    (target.peerName ? `Peer: ${target.peerName}\n` : '') +
-    'Collecting stats…';
-  showOverlayWithDescription(target.topicName, measuringText, false);
-  statusEl.textContent = `Collecting ${action} for ${target.topicName}${peerInfo}…`;
-  try {
-    const payload = await requestTopicTool(action, target.topicName, target.peerName);
-    showTopicMeasurementOverlay(action, target, payload);
-  } catch (err) {
-    let message;
-    if (err?.name === 'AbortError') {
-      message = 'request timed out';
-    } else {
-      message = err?.message || String(err);
+  if (target.type === 'topic-edge' || target.type === 'topic-node') {
+    const topicGeometry = currentScene.nodes?.get(target.topicName);
+    if (!topicGeometry) {
+      statusEl.textContent = `Topic ${target.topicName} not visible in current layout`;
+      return;
     }
-    statusEl.textContent = `Failed to collect ${action} for ${target.topicName}: ${message}`;
-    showOverlayWithDescription(
-      target.topicName,
-      `Topic: ${target.topicName}\n${actionLabel} measurement failed.\n${message}`,
-    );
+
+    if (action === 'info') {
+      showOverlayForNode(target.topicName, topicGeometry);
+      const peerInfo = target.peerName ? ` (connection with ${target.peerName})` : '';
+      statusEl.textContent = `Details shown for ${target.topicName}${peerInfo}`;
+      return;
+    }
+
+    if (action !== 'stats') {
+      statusEl.textContent = `Unsupported topic action: ${action}`;
+      return;
+    }
+
+    const peerInfo = target.peerName ? ` ↔ ${target.peerName}` : '';
+    const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+    const measuringText =
+      `Topic: ${target.topicName}\n` +
+      (target.peerName ? `Peer: ${target.peerName}\n` : '') +
+      'Collecting stats…';
+    showOverlayWithDescription(target.topicName, measuringText, false);
+    statusEl.textContent = `Collecting ${action} for ${target.topicName}${peerInfo}…`;
+    try {
+      const payload = await requestTopicTool(action, target.topicName, target.peerName);
+      showTopicMeasurementOverlay(action, target, payload);
+    } catch (err) {
+      let message;
+      if (err?.name === 'AbortError') {
+        message = 'request timed out';
+      } else {
+        message = err?.message || String(err);
+      }
+      statusEl.textContent = `Failed to collect ${action} for ${target.topicName}: ${message}`;
+      showOverlayWithDescription(
+        target.topicName,
+        `Topic: ${target.topicName}\n${actionLabel} measurement failed.\n${message}`,
+      );
+    }
+    return;
   }
+
+  if (target.type === 'node') {
+    const nodeGeometry = currentScene.nodes?.get(target.nodeName);
+    if (!nodeGeometry) {
+      statusEl.textContent = `Node ${target.nodeName} not visible in current layout`;
+      return;
+    }
+
+    if (action === 'info') {
+      showOverlayForNode(target.nodeName, nodeGeometry);
+      statusEl.textContent = `Details shown for ${target.nodeName}`;
+      return;
+    }
+
+    if (action === 'services') {
+      const placeholder =
+        `Node: ${target.nodeName}\n` +
+        'Collecting services…';
+      showOverlayWithDescription(target.nodeName, placeholder, false);
+      statusEl.textContent = `Collecting services for ${target.nodeName}…`;
+      try {
+        const payload = await requestNodeTool('services', target.nodeName);
+        showNodeServicesOverlay(target.nodeName, payload);
+      } catch (err) {
+        const message = err?.message || String(err);
+        statusEl.textContent = `Failed to fetch services for ${target.nodeName}: ${message}`;
+        showOverlayWithDescription(
+          target.nodeName,
+          `Node: ${target.nodeName}\nService query failed.\n${message}`,
+          false,
+        );
+      }
+      return;
+    }
+
+    if (action === 'parameters') {
+      const lines = [
+        `Node: ${target.nodeName}`,
+        '',
+        'Parameters view coming soon.',
+      ];
+      showOverlayWithDescription(target.nodeName, lines.join('\n'), false);
+      statusEl.textContent = `Parameters view not implemented yet for ${target.nodeName}`;
+      return;
+    }
+
+    statusEl.textContent = `Unsupported node action: ${action}`;
+    return;
+  }
+
+  statusEl.textContent = `Unsupported context action: ${action}`;
 }
 
 function handleContextMenuClick(event) {
@@ -323,6 +426,16 @@ function resolveTopicNodeTarget(nodeHit) {
   };
 }
 
+function resolveNodeTarget(nodeHit) {
+  if (!nodeHit?.geometry || nodeHit.geometry.type !== 'node') {
+    return null;
+  }
+  return {
+    type: 'node',
+    nodeName: nodeHit.name,
+  };
+}
+
 function validateContextMenuTarget() {
   if (!contextMenuState.visible || !contextMenuState.target) {
     return;
@@ -336,6 +449,12 @@ function validateContextMenuTarget() {
   }
   if (contextMenuState.target.type === 'topic-node') {
     if (!currentScene.nodes?.has(contextMenuState.target.topicName)) {
+      hideContextMenu();
+    }
+    return;
+  }
+  if (contextMenuState.target.type === 'node') {
+    if (!currentScene.nodes?.has(contextMenuState.target.nodeName)) {
       hideContextMenu();
     }
   }
@@ -354,6 +473,35 @@ async function requestTopicTool(action, topicName, peerName) {
   let payload = {};
   try {
     response = await fetch(`/topic_tool?${params.toString()}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    try {
+      payload = await response.json();
+    } catch (err) {
+      payload = {};
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response?.ok) {
+    const message = payload?.error || `HTTP ${response?.status ?? 'error'}`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+async function requestNodeTool(action, nodeName) {
+  const params = new URLSearchParams();
+  params.set('action', action);
+  params.set('node', nodeName);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TOPIC_TOOL_TIMEOUT);
+  let response;
+  let payload = {};
+  try {
+    response = await fetch(`/node_tool?${params.toString()}`, {
       cache: 'no-store',
       signal: controller.signal,
     });
@@ -437,6 +585,54 @@ function showTopicMeasurementOverlay(action, target, payload) {
       }
     }
   }
+}
+
+function showNodeServicesOverlay(nodeName, payload) {
+  if (!payload || typeof payload !== 'object') {
+    statusEl.textContent = `No data returned for services on ${nodeName}`;
+    return;
+  }
+  const geometry = currentScene.nodes?.get(nodeName);
+  if (!geometry) {
+    statusEl.textContent = `Received services for ${nodeName}, but it is not visible.`;
+    return;
+  }
+
+  const lines = [`Node: ${nodeName}`];
+  if (payload.namespace) {
+    lines.push(`Namespace: ${payload.namespace}`);
+  }
+  if (Array.isArray(payload.services) && payload.services.length) {
+    lines.push(`Services (${payload.services.length}):`);
+    payload.services.forEach(entry => {
+      const name = entry?.name ?? '(unknown)';
+      const types = Array.isArray(entry?.types) && entry.types.length
+        ? entry.types.join(', ')
+        : 'unknown type';
+      lines.push(`${name} (${types})`);
+    });
+  } else {
+    lines.push('Services: (none)');
+  }
+
+  let preferredWidth = 0;
+  overlayCtx.save();
+  overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
+  overlayCtx.font = OVERLAY_FONT;
+  lines.forEach(line => {
+    const width = overlayCtx.measureText(line).width;
+    if (width > preferredWidth) {
+      preferredWidth = width;
+    }
+  });
+  overlayCtx.restore();
+  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : canvas.width;
+  const maxAllowed = Math.max(OVERLAY_PADDING * 2 + 40, viewportWidth - 80);
+  const boxWidth = Math.min(maxAllowed, preferredWidth + OVERLAY_PADDING * 2 + 16);
+
+  showOverlayWithDescription(nodeName, lines.join('\n'), false, boxWidth);
+  const count = Array.isArray(payload.services) ? payload.services.length : 0;
+  statusEl.textContent = `Services for ${nodeName}: ${count} found`;
 }
 
 function toGraphSpace(point) {
@@ -572,7 +768,10 @@ function drawOverlayTextbox(anchorPoint, nodeName, description) {
   overlayCtx.font = OVERLAY_FONT;
   overlayCtx.textBaseline = 'top';
   overlayCtx.textAlign = 'left';
-  const maxTextWidth = OVERLAY_MAX_WIDTH - OVERLAY_PADDING * 2;
+  const widthLimit = overlayState.maxWidth > 0
+    ? Math.max(overlayState.maxWidth, OVERLAY_PADDING * 2 + 40)
+    : OVERLAY_MAX_WIDTH;
+  const maxTextWidth = Math.max(OVERLAY_PADDING * 2, widthLimit - OVERLAY_PADDING * 2);
   const lines = wrapOverlayText(description, maxTextWidth);
   let maxWidth = 0;
   lines.forEach(line => {
@@ -581,7 +780,8 @@ function drawOverlayTextbox(anchorPoint, nodeName, description) {
       maxWidth = width;
     }
   });
-  const boxWidth = Math.min(OVERLAY_MAX_WIDTH, Math.max(maxWidth, 120) + OVERLAY_PADDING * 2);
+  const desiredWidth = Math.max(maxWidth, 120) + OVERLAY_PADDING * 2;
+  const boxWidth = Math.min(widthLimit, desiredWidth);
   const boxHeight = OVERLAY_PADDING * 2 + lines.length * OVERLAY_LINE_HEIGHT;
   let boxX = anchorPoint.x + OVERLAY_MARGIN;
   let boxY = anchorPoint.y - boxHeight - OVERLAY_MARGIN;
@@ -641,6 +841,7 @@ function refreshOverlay() {
   }
   if (overlayState.auto) {
     overlayState.description = resolveOverlayDescription(overlayState.nodeName, geometry);
+    overlayState.maxWidth = 0;
   }
   const anchorPoint = layoutToView(geometry.center);
   drawOverlayTextbox(anchorPoint, overlayState.nodeName, overlayState.description);
@@ -663,11 +864,12 @@ function showOverlayForNode(nodeName, geometry) {
   showOverlayWithDescription(nodeName, description, true);
 }
 
-function showOverlayWithDescription(nodeName, description, auto = false) {
+function showOverlayWithDescription(nodeName, description, auto = false, maxWidth = 0) {
   overlayState.visible = true;
   overlayState.nodeName = nodeName;
   overlayState.description = description;
   overlayState.auto = auto;
+  overlayState.maxWidth = Math.max(0, maxWidth || 0);
   refreshOverlay();
 }
 
@@ -1859,7 +2061,7 @@ function handleContextMenu(event) {
       return;
     }
   }
-  const edgeHit = findEdgeAt(graphPoint);
+  const edgeHit = nodeHit ? null : findEdgeAt(graphPoint);
   if (edgeHit) {
     const target = resolveTopicEdgeTarget(edgeHit);
     if (target) {
@@ -1868,10 +2070,13 @@ function handleContextMenu(event) {
       return;
     }
   }
-  if (nodeHit) {
-    hideContextMenu();
-    showOverlayForNode(nodeHit.name, nodeHit.geometry);
-    return;
+  if (nodeHit && nodeHit.geometry?.type === 'node') {
+    hideOverlay();
+    const target = resolveNodeTarget(nodeHit);
+    if (target) {
+      showContextMenu({ x: event.clientX, y: event.clientY }, target);
+      return;
+    }
   }
   hideOverlay();
   hideContextMenu();
