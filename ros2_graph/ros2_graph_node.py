@@ -15,6 +15,28 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.serialization import serialize_message
 from .web import GraphWebServer
 
+try:
+    from rcl_interfaces.msg import ParameterType, ParameterValue  # type: ignore
+    from rcl_interfaces.srv import GetParameters, ListParameters  # type: ignore
+except ImportError:  # pragma: no cover - allows docs/tests without ROS deps
+    ParameterType = None  # type: ignore[assignment]
+    ParameterValue = None  # type: ignore[assignment]
+    GetParameters = None  # type: ignore[assignment]
+    ListParameters = None  # type: ignore[assignment]
+
+PARAMETER_NOT_SET = getattr(ParameterType, 'PARAMETER_NOT_SET', 0)
+PARAMETER_BOOL = getattr(ParameterType, 'PARAMETER_BOOL', 1)
+PARAMETER_INTEGER = getattr(ParameterType, 'PARAMETER_INTEGER', 2)
+PARAMETER_DOUBLE = getattr(ParameterType, 'PARAMETER_DOUBLE', 3)
+PARAMETER_STRING = getattr(ParameterType, 'PARAMETER_STRING', 4)
+PARAMETER_BYTE_ARRAY = getattr(ParameterType, 'PARAMETER_BYTE_ARRAY', 5)
+PARAMETER_BOOL_ARRAY = getattr(ParameterType, 'PARAMETER_BOOL_ARRAY', 6)
+PARAMETER_INTEGER_ARRAY = getattr(ParameterType, 'PARAMETER_INTEGER_ARRAY', 7)
+PARAMETER_DOUBLE_ARRAY = getattr(ParameterType, 'PARAMETER_DOUBLE_ARRAY', 8)
+PARAMETER_STRING_ARRAY = getattr(ParameterType, 'PARAMETER_STRING_ARRAY', 9)
+
+PARAMETER_DISPLAY_MAX = 32
+
 
 CLUSTER_NAMESPACE_LEVEL = 0
 GROUP_TF_NODES = True
@@ -350,6 +372,82 @@ def _split_node_fqn(node_name: str) -> Tuple[str, str]:
     return namespace or '/', base
 
 
+def _parameter_type_label(param_type: Optional[int]) -> str:
+    if param_type is None:
+        return ''
+    mapping = {
+        PARAMETER_NOT_SET: 'not set',
+        PARAMETER_BOOL: 'bool',
+        PARAMETER_INTEGER: 'integer',
+        PARAMETER_DOUBLE: 'double',
+        PARAMETER_STRING: 'string',
+        PARAMETER_BYTE_ARRAY: 'bytes',
+        PARAMETER_BOOL_ARRAY: 'bool[]',
+        PARAMETER_INTEGER_ARRAY: 'int[]',
+        PARAMETER_DOUBLE_ARRAY: 'double[]',
+        PARAMETER_STRING_ARRAY: 'string[]',
+    }
+    return mapping.get(param_type, f'unknown({param_type})')
+
+
+def _parameter_value_to_python(param_type: Optional[int], param_value: object) -> object:
+    if ParameterValue is not None and isinstance(param_value, ParameterValue):
+        type_id = param_type if isinstance(param_type, int) else param_value.type
+        if type_id == PARAMETER_NOT_SET:
+            return None
+        if type_id == PARAMETER_BOOL:
+            return bool(param_value.bool_value)
+        if type_id == PARAMETER_INTEGER:
+            return int(param_value.integer_value)
+        if type_id == PARAMETER_DOUBLE:
+            return float(param_value.double_value)
+        if type_id == PARAMETER_STRING:
+            return str(param_value.string_value)
+        if type_id == PARAMETER_BYTE_ARRAY:
+            return bytes(param_value.byte_array_value)
+        if type_id == PARAMETER_BOOL_ARRAY:
+            return [bool(v) for v in param_value.bool_array_value]
+        if type_id == PARAMETER_INTEGER_ARRAY:
+            return [int(v) for v in param_value.integer_array_value]
+        if type_id == PARAMETER_DOUBLE_ARRAY:
+            return [float(v) for v in param_value.double_array_value]
+        if type_id == PARAMETER_STRING_ARRAY:
+            return [str(v) for v in param_value.string_array_value]
+    return param_value
+
+
+def _stringify_parameter_value(param_type: Optional[int], param_value: object) -> str:
+    value = _parameter_value_to_python(param_type, param_value)
+    if value is None:
+        return ''
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, bytes):
+        return '0x' + value.hex()
+    if isinstance(value, (list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except TypeError:  # pragma: no cover - defensive
+            return '[' + ', '.join(str(item) for item in value) + ']'
+    if isinstance(value, dict):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except TypeError:  # pragma: no cover - defensive
+            return str(value)
+    return str(value)
+
+
+def _truncate_parameter_display(value: str, limit: int = PARAMETER_DISPLAY_MAX) -> str:
+    text = value or ''
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3] + '...'
+
+
 def _format_qos(profile: QoSProfile | None) -> str:
     if profile is None:
         return ''
@@ -454,6 +552,70 @@ class Ros2GraphNode(Node):
             for key in stale_keys:
                 self._metrics_cache.pop(key, None)
 
+    def _call_parameter_service(self, srv_type, service_name: str, request, timeout: float = 2.0):
+        client = self.create_client(srv_type, service_name)
+        try:
+            if not client.wait_for_service(timeout_sec=timeout):
+                raise TimeoutError(f'service {service_name} unavailable')
+            future = client.call_async(request)
+            deadline = time.monotonic() + max(timeout, 0.1)
+            while True:
+                if future.done():
+                    if future.cancelled():
+                        raise RuntimeError(f'service call to {service_name} was cancelled')
+                    exc = future.exception()
+                    if exc is not None:
+                        raise exc
+                    return future.result()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    future.cancel()
+                    raise TimeoutError(f'service {service_name} timed out')
+                time.sleep(min(0.05, remaining))
+        finally:
+            try:
+                self.destroy_client(client)
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+    def _collect_parameters_for_node(self, base: str, namespace: str) -> List[Dict[str, object]]:
+        if ListParameters is None or GetParameters is None:
+            raise RuntimeError('parameter services unavailable (rcl_interfaces missing)')
+
+        fully_qualified = _fully_qualified_node_name(namespace, base)
+        list_service = f'{fully_qualified}/list_parameters'
+        list_request = ListParameters.Request()
+        list_request.depth = 0
+
+        list_response = self._call_parameter_service(ListParameters, list_service, list_request)
+        result = getattr(list_response, 'result', None)
+        names = list((getattr(result, 'names', []) or [])) if result is not None else []
+
+        names = sorted(set(names))
+        if not names:
+            return []
+
+        get_service = f'{fully_qualified}/get_parameters'
+        get_request = GetParameters.Request()
+        get_request.names = list(names)
+        get_response = self._call_parameter_service(GetParameters, get_service, get_request)
+
+        values = list(getattr(get_response, 'values', []) or [])
+        parameters: List[Dict[str, object]] = []
+        for name, value in zip(names, values):
+            type_id = getattr(value, 'type', None)
+            display_value = _truncate_parameter_display(
+                _stringify_parameter_value(type_id, value),
+                PARAMETER_DISPLAY_MAX,
+            )
+            parameters.append({
+                'name': name,
+                'type': _parameter_type_label(type_id),
+                'value': display_value,
+            })
+
+        return parameters
+
     def _handle_topic_tool_request(self, action: str, topic: str, peer: Optional[str]) -> Tuple[int, Dict[str, object]]:
         action = (action or '').lower()
         if action not in {'info', 'stats'}:
@@ -478,7 +640,7 @@ class Ros2GraphNode(Node):
         try:
             metrics = self._get_topic_stats(topic, type_names, duration)
         except Exception as exc:  # pragma: no cover - defensive
-            self.get_logger().warning('Failed to collect %s for %s: %s', action, topic, exc)
+            self.get_logger().warning(f'Failed to collect {action} for {topic}: {exc}')
             return 500, {'error': str(exc)}
 
         metrics['action'] = action
@@ -487,7 +649,7 @@ class Ros2GraphNode(Node):
 
     def _handle_node_tool_request(self, action: str, node_name: str) -> Tuple[int, Dict[str, object]]:
         action = (action or '').lower()
-        if action not in {'services'}:
+        if action not in {'services', 'parameters'}:
             return 400, {'error': f"unsupported action '{action}'"}
 
         snapshot = self._last_snapshot
@@ -498,27 +660,52 @@ class Ros2GraphNode(Node):
             return 404, {'error': f"node '{node_name}' not found"}
 
         namespace, base = _split_node_fqn(node_name)
+
+        if action == 'services':
+            try:
+                entries = self.get_service_names_and_types_by_node(base, namespace)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.get_logger().warning(f'Failed to fetch services for {node_name}: {exc}')
+                return 500, {'error': str(exc)}
+
+            services = [
+                {
+                    'name': service_name,
+                    'types': list(types),
+                }
+                for service_name, types in sorted(entries, key=lambda item: item[0])
+            ]
+
+            return 200, {
+                'action': action,
+                'node': node_name,
+                'namespace': namespace,
+                'base': base,
+                'services': services,
+                'count': len(services),
+            }
+
+        if ListParameters is None or GetParameters is None:
+            return 503, {'error': 'parameter services unavailable'}
+
         try:
-            entries = self.get_service_names_and_types_by_node(base, namespace)
+            parameters = self._collect_parameters_for_node(base, namespace)
+        except TimeoutError as exc:
+            self.get_logger().warning(f'Parameter query timed out for {node_name}: {exc}')
+            return 504, {'error': str(exc)}
         except Exception as exc:  # pragma: no cover - defensive
-            self.get_logger().warning('Failed to fetch services for %s: %s', node_name, exc)
+            self.get_logger().warning(f'Failed to fetch parameters for {node_name}: {exc}')
             return 500, {'error': str(exc)}
 
-        services = [
-            {
-                'name': service_name,
-                'types': list(types),
-            }
-            for service_name, types in sorted(entries, key=lambda item: item[0])
-        ]
+        parameters.sort(key=lambda item: item['name'])
 
         return 200, {
             'action': action,
             'node': node_name,
             'namespace': namespace,
             'base': base,
-            'services': services,
-            'count': len(services),
+            'parameters': parameters,
+            'count': len(parameters),
         }
 
     def _build_topic_info_payload(

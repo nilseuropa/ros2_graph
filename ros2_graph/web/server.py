@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib import resources
 from socketserver import ThreadingMixIn
@@ -196,7 +197,8 @@ class GraphWebServer:
         try:
             status, payload = self._node_tool_handler(action, node)
         except Exception as exc:  # pragma: no cover - defensive
-            self._logger.exception('node_tool handler raised an exception')
+            tb = traceback.format_exc()
+            self._logger.error(f'node_tool handler raised an exception: {exc}\n{tb}')
             self._send_json(handler, 500, {'error': f'failed to process request: {exc}'})
             return
         if not isinstance(status, int):

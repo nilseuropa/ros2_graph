@@ -225,8 +225,14 @@ function drawOverlayTables(anchorPoint, data) {
   const headerBodyGap = rowHeight * 0.3;
   const columnSpacing = 24;
 
-  const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : overlayCanvas.width;
-  const maxAllowedWidth = Math.max(OVERLAY_PADDING * 2 + 160, viewportWidth - OVERLAY_MARGIN * 2);
+  const viewportWidthRaw = typeof window !== 'undefined' ? window.innerWidth : overlayCanvas.width;
+  const viewportWidth = Number.isFinite(viewportWidthRaw) ? viewportWidthRaw : 0;
+  const canvasWidthRaw = overlayCanvas?.width;
+  const canvasWidth = Number.isFinite(canvasWidthRaw) ? canvasWidthRaw : viewportWidth;
+  const containerWidthRaw = canvasContainer?.clientWidth;
+  const containerWidth = Number.isFinite(containerWidthRaw) ? containerWidthRaw : 0;
+  const maxContainerWidth = Math.max(viewportWidth, canvasWidth, containerWidth);
+  const maxAllowedWidth = Math.max(OVERLAY_PADDING * 2 + 160, maxContainerWidth - OVERLAY_MARGIN * 2);
 
   let maxTitleWidth = 0;
   titleLines.forEach(line => {
@@ -573,13 +579,23 @@ async function handleContextMenuAction(action, target) {
     }
 
     if (action === 'parameters') {
-      const lines = [
-        `Node: ${target.nodeName}`,
-        '',
-        'Parameters view coming soon.',
-      ];
-      showOverlayWithDescription(target.nodeName, lines.join('\n'), false);
-      statusEl.textContent = `Parameters view not implemented yet for ${target.nodeName}`;
+      const placeholder =
+        `Node: ${target.nodeName}\n` +
+        'Collecting parameters…';
+      showOverlayWithDescription(target.nodeName, placeholder, false);
+      statusEl.textContent = `Collecting parameters for ${target.nodeName}…`;
+      try {
+        const payload = await requestNodeTool('parameters', target.nodeName);
+        showNodeParametersOverlay(target.nodeName, payload);
+      } catch (err) {
+        const message = err?.message || String(err);
+        statusEl.textContent = `Failed to fetch parameters for ${target.nodeName}: ${message}`;
+        showOverlayWithDescription(
+          target.nodeName,
+          `Node: ${target.nodeName}\nParameter query failed.\n${message}`,
+          false,
+        );
+      }
       return;
     }
 
@@ -877,6 +893,50 @@ function showNodeServicesOverlay(nodeName, payload) {
     });
   }
   statusEl.textContent = `Services for ${nodeName}: ${count} found`;
+}
+
+function showNodeParametersOverlay(nodeName, payload) {
+  if (!payload || typeof payload !== 'object') {
+    statusEl.textContent = `No data returned for parameters on ${nodeName}`;
+    return;
+  }
+  const geometry = currentScene.nodes?.get(nodeName);
+  if (!geometry) {
+    statusEl.textContent = `Received parameters for ${nodeName}, but it is not visible.`;
+    return;
+  }
+
+  const titleLines = [`Node: ${nodeName}`];
+  if (payload.namespace) {
+    titleLines.push(`Namespace: ${payload.namespace}`);
+  }
+  const rows = Array.isArray(payload.parameters)
+    ? payload.parameters.map(entry => {
+        const name = entry?.name ?? '(unknown)';
+        const value = entry?.value ?? '';
+        return [name, String(value)];
+      })
+    : [];
+  const count = rows.length;
+
+  if (!rows.length) {
+    const lines = [...titleLines, 'No parameters available.'];
+    showOverlayWithDescription(nodeName, lines.join('\n'), false);
+  } else {
+    const header = ['Name', 'Value'];
+    showOverlayWithTables(nodeName, {
+      titleLines,
+      tables: [
+        {
+          title: `Parameters (${count})`,
+          headers: header,
+          rows,
+        },
+      ],
+    });
+  }
+
+  statusEl.textContent = `Parameters for ${nodeName}: ${count} found`;
 }
 
 function toGraphSpace(point) {
