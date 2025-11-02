@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib import resources
 from socketserver import ThreadingMixIn
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
+from urllib.parse import parse_qs
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..ros2_graph_node import GraphSnapshot
@@ -22,7 +23,7 @@ class _ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
 class GraphWebServer:
     """Lightweight HTTP server that serves graph data and a simple UI."""
 
-    def __init__(self, host: str, port: int, logger) -> None:
+    def __init__(self, host: str, port: int, logger, topic_tool_handler=None) -> None:
         self._host = host
         self._port = port
         self._logger = logger
@@ -33,17 +34,26 @@ class GraphWebServer:
         self._graphviz_warning_logged = False
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._running = False
+        self._topic_tool_handler = topic_tool_handler
 
     def _create_handler(self):
         parent = self
 
         class GraphRequestHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:
-                path = self.path.split('?', 1)[0]
+                raw_path = self.path
+                if '?' in raw_path:
+                    path, query = raw_path.split('?', 1)
+                    params = parse_qs(query, keep_blank_values=True)
+                else:
+                    path = raw_path
+                    params = {}
                 if path in ('/', '/index.html', '/styles.css', '/app.js'):
                     parent._serve_static(self, path)
                 elif path == '/graph':
                     parent._serve_graph(self)
+                elif path == '/topic_tool':
+                    parent._serve_topic_tool(self, params)
                 elif path == '/healthz':
                     parent._serve_health(self)
                 else:
@@ -138,6 +148,38 @@ class GraphWebServer:
         handler.send_header('Cache-Control', 'no-cache')
         handler.end_headers()
         handler.wfile.write(b'ok')
+
+    def _send_json(self, handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, object]) -> None:
+        data = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+        handler.send_response(status)
+        handler.send_header('Content-Type', 'application/json')
+        handler.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        handler.send_header('Content-Length', str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data)
+
+    def _serve_topic_tool(self, handler: BaseHTTPRequestHandler, params: Dict[str, list]) -> None:
+        if self._topic_tool_handler is None:
+            self._send_json(handler, 503, {'error': 'topic tools unavailable'})
+            return
+        topic = params.get('topic', [''])[0].strip()
+        action = params.get('action', [''])[0].strip().lower()
+        peer = params.get('peer', [''])[0].strip()
+        if not topic or not action:
+            self._send_json(handler, 400, {'error': 'missing topic or action'})
+            return
+        try:
+            status, payload = self._topic_tool_handler(action, topic, peer or None)
+        except Exception as exc:  # pragma: no cover - defensive
+            self._logger.exception('topic_tool handler raised an exception')
+            self._send_json(handler, 500, {'error': f'failed to process request: {exc}'})
+            return
+        if not isinstance(status, int):
+            status = 500
+        if not isinstance(payload, dict):
+            payload = {'error': 'invalid response from handler'}
+            status = 500
+        self._send_json(handler, status, payload)
 
     def _compute_graphviz_plain(self, snapshot: 'GraphSnapshot') -> Optional[str]:
         if not self._dot_path:

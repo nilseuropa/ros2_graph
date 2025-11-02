@@ -56,7 +56,15 @@ const overlayState = {
   visible: false,
   nodeName: '',
   description: '',
+  auto: false,
 };
+const contextMenu = document.getElementById('contextMenu');
+const contextMenuState = {
+  visible: false,
+  target: null,
+  position: { x: 0, y: 0 },
+};
+const canvasContainer = document.getElementById('canvasContainer');
 const BASE_FONT_FAMILY = '"Times New Roman", serif';
 const BASE_FONT_SIZE = 14;
 const BASE_LINE_HEIGHT = 18;
@@ -68,6 +76,7 @@ const OVERLAY_LINE_HEIGHT = 18;
 const OVERLAY_PADDING = 12;
 const OVERLAY_MAX_WIDTH = 320;
 const OVERLAY_MARGIN = 12;
+const TOPIC_TOOL_TIMEOUT = 15000;
 
 function resetViewState() {
   viewState.scale = 1;
@@ -86,6 +95,54 @@ function layoutToView(point) {
   };
 }
 
+function formatNumber(value, decimals = 2) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  return value.toFixed(decimals);
+}
+
+function formatHz(value) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  if (value >= 1000) {
+    return value.toFixed(0) + ' Hz';
+  }
+  if (value >= 10) {
+    return value.toFixed(1) + ' Hz';
+  }
+  return value.toFixed(2) + ' Hz';
+}
+
+function formatBytes(value) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const abs = Math.abs(value);
+  if (abs >= 1024 * 1024) {
+    return (value / (1024 * 1024)).toFixed(2) + ' MiB';
+  }
+  if (abs >= 1024) {
+    return (value / 1024).toFixed(2) + ' KiB';
+  }
+  return value.toFixed(0) + ' B';
+}
+
+function formatBytesPerSecond(value) {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return 'n/a';
+  }
+  const abs = Math.abs(value);
+  if (abs >= 1024 * 1024) {
+    return (value / (1024 * 1024)).toFixed(2) + ' MiB/s';
+  }
+  if (abs >= 1024) {
+    return (value / 1024).toFixed(2) + ' KiB/s';
+  }
+  return value.toFixed(0) + ' B/s';
+}
+
 function clearOverlayCanvas() {
   overlayCtx.save();
   overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
@@ -101,7 +158,268 @@ function hideOverlay() {
   overlayState.visible = false;
   overlayState.nodeName = '';
   overlayState.description = '';
+  overlayState.auto = false;
   clearOverlayCanvas();
+}
+
+function hideContextMenu() {
+  if (!contextMenuState.visible) {
+    return;
+  }
+  contextMenuState.visible = false;
+  contextMenuState.target = null;
+  if (contextMenu) {
+    contextMenu.classList.remove('visible');
+  }
+}
+
+function showContextMenu(clientPoint, target) {
+  if (!contextMenu) {
+    return;
+  }
+  contextMenuState.visible = true;
+  contextMenuState.target = target;
+  contextMenuState.position = { x: clientPoint.x, y: clientPoint.y };
+  contextMenu.classList.add('visible');
+  contextMenu.style.visibility = 'hidden';
+  contextMenu.style.left = '0px';
+  contextMenu.style.top = '0px';
+
+  const containerRect = canvasContainer?.getBoundingClientRect();
+  const menuRect = contextMenu.getBoundingClientRect();
+  const margin = 8;
+  let left = clientPoint.x;
+  let top = clientPoint.y;
+
+  if (containerRect) {
+    left -= containerRect.left;
+    top -= containerRect.top;
+    if (left + menuRect.width > containerRect.width - margin) {
+      left = containerRect.width - margin - menuRect.width;
+    }
+    if (top + menuRect.height > containerRect.height - margin) {
+      top = containerRect.height - margin - menuRect.height;
+    }
+    if (left < margin) {
+      left = margin;
+    }
+    if (top < margin) {
+      top = margin;
+    }
+  }
+
+  contextMenu.style.left = `${left}px`;
+  contextMenu.style.top = `${top}px`;
+  contextMenu.style.visibility = 'visible';
+}
+
+async function handleContextMenuAction(action, target) {
+  hideContextMenu();
+  if (!target || target.type !== 'topic-edge') {
+    return;
+  }
+  const topicGeometry = currentScene.nodes?.get(target.topicName);
+  if (!topicGeometry) {
+    statusEl.textContent = `Topic ${target.topicName} not visible in current layout`;
+    return;
+  }
+
+  if (action === 'info') {
+    showOverlayForNode(target.topicName, topicGeometry);
+    const peerInfo = target.peerName ? ` (connection with ${target.peerName})` : '';
+    statusEl.textContent = `Details shown for ${target.topicName}${peerInfo}`;
+    return;
+  }
+
+  if (action !== 'stats') {
+    statusEl.textContent = `Unsupported topic action: ${action}`;
+    return;
+  }
+
+  const peerInfo = target.peerName ? ` ↔ ${target.peerName}` : '';
+  const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+  const measuringText =
+    `Topic: ${target.topicName}\n` +
+    (target.peerName ? `Peer: ${target.peerName}\n` : '') +
+    'Collecting stats…';
+  showOverlayWithDescription(target.topicName, measuringText, false);
+  statusEl.textContent = `Collecting ${action} for ${target.topicName}${peerInfo}…`;
+  try {
+    const payload = await requestTopicTool(action, target.topicName, target.peerName);
+    showTopicMeasurementOverlay(action, target, payload);
+  } catch (err) {
+    let message;
+    if (err?.name === 'AbortError') {
+      message = 'request timed out';
+    } else {
+      message = err?.message || String(err);
+    }
+    statusEl.textContent = `Failed to collect ${action} for ${target.topicName}: ${message}`;
+    showOverlayWithDescription(
+      target.topicName,
+      `Topic: ${target.topicName}\n${actionLabel} measurement failed.\n${message}`,
+    );
+  }
+}
+
+function handleContextMenuClick(event) {
+  const button = event.target.closest('button[data-action]');
+  if (!button) {
+    return;
+  }
+  const action = button.dataset.action;
+  if (!action) {
+    return;
+  }
+  const target = contextMenuState.target;
+  void handleContextMenuAction(action, target);
+}
+
+function handleDocumentPointerDown(event) {
+  if (!contextMenuState.visible) {
+    return;
+  }
+  if (contextMenu && contextMenu.contains(event.target)) {
+    return;
+  }
+  hideContextMenu();
+}
+
+function resolveTopicEdgeTarget(edge) {
+  if (!edge || !currentScene?.nodes) {
+    return null;
+  }
+  const startGeom = currentScene.nodes.get(edge.start);
+  const endGeom = currentScene.nodes.get(edge.end);
+  if (startGeom?.type === 'topic') {
+    return {
+      type: 'topic-edge',
+      topicName: edge.start,
+      peerName: edge.end,
+      edgeId: edge.id,
+      edge,
+    };
+  }
+  if (endGeom?.type === 'topic') {
+    return {
+      type: 'topic-edge',
+      topicName: edge.end,
+      peerName: edge.start,
+      edgeId: edge.id,
+      edge,
+    };
+  }
+  return null;
+}
+
+function validateContextMenuTarget() {
+  if (!contextMenuState.visible || !contextMenuState.target) {
+    return;
+  }
+  if (contextMenuState.target.type === 'topic-edge') {
+    const stillExists = currentScene.edges?.some(edge => edge.id === contextMenuState.target.edgeId);
+    if (!stillExists) {
+      hideContextMenu();
+    }
+  }
+}
+
+async function requestTopicTool(action, topicName, peerName) {
+  const params = new URLSearchParams();
+  params.set('action', action);
+  params.set('topic', topicName);
+  if (peerName) {
+    params.set('peer', peerName);
+  }
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TOPIC_TOOL_TIMEOUT);
+  let response;
+  let payload = {};
+  try {
+    response = await fetch(`/topic_tool?${params.toString()}`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    try {
+      payload = await response.json();
+    } catch (err) {
+      payload = {};
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response?.ok) {
+    const message = payload?.error || `HTTP ${response?.status ?? 'error'}`;
+    throw new Error(message);
+  }
+  return payload;
+}
+
+function showTopicMeasurementOverlay(action, target, payload) {
+  if (!payload || typeof payload !== 'object') {
+    statusEl.textContent = `No data returned for ${action} on ${target.topicName}`;
+    return;
+  }
+  const geometry = currentScene.nodes?.get(target.topicName);
+  if (!geometry) {
+    statusEl.textContent = `Received data for ${target.topicName}, but it is not visible.`;
+    return;
+  }
+
+  const lines = [];
+  const topicName = payload.topic || target.topicName;
+  lines.push(`Topic: ${topicName}`);
+  if (payload.type) {
+    lines.push(`Type: ${payload.type}`);
+  }
+  lines.push(`Cached: ${payload.cached ? 'yes' : 'no'}`);
+  if (payload.message_count !== undefined) {
+    lines.push(`Messages observed: ${payload.message_count}`);
+  }
+  if (payload.duration !== undefined) {
+    lines.push(`Window: ${formatNumber(payload.duration, 2)} s`);
+  }
+  lines.push('');
+
+  if (payload.warning) {
+    lines.push(`Warning: ${payload.warning}`);
+  }
+
+  if (payload.average_hz !== undefined || payload.min_hz !== undefined || payload.max_hz !== undefined) {
+    lines.push('Frequency:');
+    lines.push(`  avg: ${formatHz(payload.average_hz)}`);
+    lines.push(`  min: ${formatHz(payload.min_hz)}`);
+    lines.push(`  max: ${formatHz(payload.max_hz)}`);
+  }
+
+  if (payload.average_bps !== undefined || payload.average_bytes_per_msg !== undefined) {
+    lines.push('');
+    lines.push('Bandwidth:');
+    lines.push(`  avg: ${formatBytesPerSecond(payload.average_bps)}`);
+    lines.push(`  msg size: ${formatBytes(payload.average_bytes_per_msg)}`);
+    lines.push(`  max size: ${formatBytes(payload.max_bytes)}`);
+    lines.push(`  min size: ${formatBytes(payload.min_bytes)}`);
+  }
+
+  showOverlayWithDescription(topicName, lines.join('\n'));
+
+  const peerInfo = target.peerName ? ` ↔ ${target.peerName}` : '';
+  const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+  if (payload.warning) {
+    statusEl.textContent = `${actionLabel} collection for ${topicName}${peerInfo}: ${payload.warning}`;
+  } else {
+    const freq = formatHz(payload.average_hz);
+    const bw = formatBytesPerSecond(payload.average_bps);
+    if (freq === 'n/a' && bw === 'n/a') {
+      statusEl.textContent = `${actionLabel} for ${topicName}${peerInfo}: no traffic observed`;
+    } else {
+      statusEl.textContent = `${actionLabel} for ${topicName}${peerInfo}: avg ${freq}, ${bw}`;
+      if (payload.cached) {
+        statusEl.textContent += ' (cached)';
+      }
+    }
+  }
 }
 
 function toGraphSpace(point) {
@@ -304,7 +622,9 @@ function refreshOverlay() {
     hideOverlay();
     return;
   }
-  overlayState.description = resolveOverlayDescription(overlayState.nodeName, geometry);
+  if (overlayState.auto) {
+    overlayState.description = resolveOverlayDescription(overlayState.nodeName, geometry);
+  }
   const anchorPoint = layoutToView(geometry.center);
   drawOverlayTextbox(anchorPoint, overlayState.nodeName, overlayState.description);
 }
@@ -323,9 +643,14 @@ function resolveOverlayDescription(nodeName, geometry) {
 
 function showOverlayForNode(nodeName, geometry) {
   const description = resolveOverlayDescription(nodeName, geometry);
+  showOverlayWithDescription(nodeName, description, true);
+}
+
+function showOverlayWithDescription(nodeName, description, auto = false) {
   overlayState.visible = true;
   overlayState.nodeName = nodeName;
   overlayState.description = description;
+  overlayState.auto = auto;
   refreshOverlay();
 }
 
@@ -968,6 +1293,7 @@ function resizeCanvas() {
   canvas.height = Math.max(240, window.innerHeight - headerHeight - 40);
   overlayCanvas.width = canvas.width;
   overlayCanvas.height = canvas.height;
+  hideContextMenu();
   renderGraph(lastGraph, lastFingerprint);
 }
 
@@ -982,6 +1308,10 @@ canvas.addEventListener('pointerleave', handlePointerCancel);
 canvas.addEventListener('contextmenu', handleContextMenu);
 canvas.addEventListener('dblclick', handleDoubleClick);
 document.addEventListener('keydown', handleKeyDown);
+document.addEventListener('pointerdown', handleDocumentPointerDown);
+if (contextMenu) {
+  contextMenu.addEventListener('click', handleContextMenuClick);
+}
 
 const HIDDEN_NAME_PATTERNS = [/\/rosout\b/i];
 
@@ -1114,6 +1444,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       edges: [],
     };
     hideOverlay();
+    hideContextMenu();
     return;
   }
 
@@ -1137,6 +1468,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       edges: [],
     };
     hideOverlay();
+    hideContextMenu();
     ctx.save();
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
@@ -1153,6 +1485,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       edges: [],
     };
     hideOverlay();
+    hideContextMenu();
     ctx.save();
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
@@ -1192,6 +1525,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       edges: [],
     };
     hideOverlay();
+    hideContextMenu();
     ctx.save();
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
@@ -1241,6 +1575,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       edges: [],
     };
     hideOverlay();
+    hideContextMenu();
     ctx.save();
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
@@ -1379,6 +1714,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     nodes: nodesMap,
     edges: sceneEdges,
   };
+  validateContextMenuTarget();
   refreshOverlay();
 }
 
@@ -1413,6 +1749,7 @@ function handlePointerDown(event) {
   }
   event.preventDefault();
   hideOverlay();
+  hideContextMenu();
   const point = getCanvasPoint(event);
   const graphPoint = toGraphSpace(point);
   const nodeHit = findNodeAt(graphPoint);
@@ -1496,12 +1833,23 @@ function handleContextMenu(event) {
   }
   const canvasPoint = getCanvasPoint(event);
   const graphPoint = toGraphSpace(canvasPoint);
+  const edgeHit = findEdgeAt(graphPoint);
+  if (edgeHit) {
+    const target = resolveTopicEdgeTarget(edgeHit);
+    if (target) {
+      hideOverlay();
+      showContextMenu({ x: event.clientX, y: event.clientY }, target);
+      return;
+    }
+  }
   const nodeHit = findNodeAt(graphPoint);
   if (nodeHit) {
+    hideContextMenu();
     showOverlayForNode(nodeHit.name, nodeHit.geometry);
     return;
   }
   hideOverlay();
+  hideContextMenu();
 }
 
 function handleDoubleClick(event) {
@@ -1523,6 +1871,7 @@ function handleDoubleClick(event) {
 function handleKeyDown(event) {
   if (event.key === 'Escape') {
     hideOverlay();
+    hideContextMenu();
   }
 }
 
