@@ -25,6 +25,7 @@ HIDE_SINGLE_CONNECTION_TOPICS = False
 HIDE_DEAD_END_TOPICS = False
 HIDE_TF_NODES = False
 INTERNAL_NODE_NAMES = {'/ros2_graph_metrics_probe', 'ros2_graph_metrics_probe'}
+INTERNAL_NODE_PREFIXES = ('/tf_listener', '/tf2_buffer', '/tf_static_listener', '/transform_listener')
 
 
 @dataclass(frozen=True)
@@ -303,6 +304,13 @@ class GraphBuilder:
             if name
         }
         excluded_nodes.update(INTERNAL_NODE_NAMES)
+        excluded_nodes.update(
+            {
+                name
+                for name in node_names
+                if any(name.startswith(prefix) for prefix in INTERNAL_NODE_PREFIXES)
+            }
+        )
 
         if excluded_nodes:
             node_names.difference_update(excluded_nodes)
