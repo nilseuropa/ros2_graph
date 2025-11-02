@@ -59,7 +59,112 @@ const overlayState = {
   auto: false,
   maxWidth: 0,
   table: null,
+  hoverRow: null,
+  layout: null,
 };
+
+function setOverlayPointerCapture(enabled) {
+  if (!overlayCanvas) {
+    return;
+  }
+  overlayCanvas.style.pointerEvents = enabled ? 'auto' : 'none';
+}
+
+setOverlayPointerCapture(false);
+
+function pointInRect(x, y, rect) {
+  if (!rect) {
+    return false;
+  }
+  return (
+    x >= rect.x &&
+    x <= rect.x + rect.width &&
+    y >= rect.y &&
+    y <= rect.y + rect.height
+  );
+}
+
+function setOverlayHover(nextHover) {
+  const prev = overlayState.hoverRow;
+  const unchanged =
+    (prev === null && nextHover === null) ||
+    (prev &&
+      nextHover &&
+      prev.tableIndex === nextHover.tableIndex &&
+      prev.rowType === nextHover.rowType &&
+      prev.rowIndex === nextHover.rowIndex);
+  if (unchanged) {
+    return;
+  }
+  overlayState.hoverRow = nextHover;
+  if (overlayState.visible && overlayState.table) {
+    refreshOverlay();
+  }
+}
+
+function updateOverlayHoverPosition(x, y) {
+  if (!overlayState.visible || !overlayState.table || !overlayState.layout) {
+    setOverlayHover(null);
+    return;
+  }
+  const { box, tables } = overlayState.layout;
+  if (!box || !pointInRect(x, y, box)) {
+    setOverlayHover(null);
+    return;
+  }
+  let hover = null;
+  if (Array.isArray(tables)) {
+    for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
+      const info = tables[tableIndex];
+      if (!info) {
+        continue;
+      }
+      if (info.header && pointInRect(x, y, info.header)) {
+        hover = { tableIndex, rowType: 'header', rowIndex: -1 };
+        break;
+      }
+      if (Array.isArray(info.rows)) {
+        for (let rowIndex = 0; rowIndex < info.rows.length; rowIndex += 1) {
+          const rect = info.rows[rowIndex];
+          if (pointInRect(x, y, rect)) {
+            hover = { tableIndex, rowType: 'body', rowIndex };
+            break;
+          }
+        }
+      }
+      if (hover) {
+        break;
+      }
+    }
+  }
+  setOverlayHover(hover);
+}
+
+function handleOverlayPointerMove(event) {
+  if (!overlayCanvas) {
+    return;
+  }
+  const rect = overlayCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    setOverlayHover(null);
+    return;
+  }
+  const scaleX = overlayCanvas.width / rect.width;
+  const scaleY = overlayCanvas.height / rect.height;
+  const x = (event.clientX - rect.left) * scaleX;
+  const y = (event.clientY - rect.top) * scaleY;
+  updateOverlayHoverPosition(x, y);
+}
+
+function handleOverlayPointerLeave() {
+  setOverlayHover(null);
+}
+
+if (overlayCanvas) {
+  overlayCanvas.addEventListener('pointermove', handleOverlayPointerMove);
+  overlayCanvas.addEventListener('pointerleave', handleOverlayPointerLeave);
+  overlayCanvas.addEventListener('pointerdown', handleOverlayPointerDown);
+}
 const contextMenu = document.getElementById('contextMenu');
 const contextMenuState = {
   visible: false,
@@ -207,7 +312,9 @@ function clearOverlayCanvas() {
 function drawOverlayTables(anchorPoint, data) {
   const tables = Array.isArray(data?.tables) ? data.tables.filter(Boolean) : [];
   const titleLines = Array.isArray(data?.titleLines) ? data.titleLines : [];
+  const layoutInfo = { box: null, tables: [] };
   if (!tables.length && !titleLines.length) {
+    overlayState.layout = null;
     return;
   }
 
@@ -343,6 +450,13 @@ function drawOverlayTables(anchorPoint, data) {
     }
   }
 
+  layoutInfo.box = {
+    x: boxX,
+    y: boxY,
+    width: boxWidth,
+    height: boxHeight,
+  };
+
   const radius = 10;
   overlayCtx.fillStyle = 'rgba(13, 17, 23, 0.95)';
   overlayCtx.strokeStyle = '#58a6ff';
@@ -373,6 +487,8 @@ function drawOverlayTables(anchorPoint, data) {
   }
 
   processedTables.forEach((info, idx) => {
+    const tableLayout = { header: null, rows: [] };
+    layoutInfo.tables[idx] = tableLayout;
     if (!info.columnCount) {
       return;
     }
@@ -384,8 +500,19 @@ function drawOverlayTables(anchorPoint, data) {
     }
 
     const headerY = cursorY + rowHeight / 2;
-    overlayCtx.fillStyle = 'rgba(88, 166, 255, 0.18)';
-    overlayCtx.fillRect(boxX + 1, headerY - rowHeight / 2, boxWidth - 2, rowHeight + headerBodyGap / 2);
+    const headerRect = {
+      x: boxX + 1,
+      y: headerY - rowHeight / 2,
+      width: boxWidth - 2,
+      height: rowHeight + headerBodyGap / 2,
+    };
+    tableLayout.header = headerRect;
+    const isHeaderHovered =
+      overlayState.hoverRow &&
+      overlayState.hoverRow.tableIndex === idx &&
+      overlayState.hoverRow.rowType === 'header';
+    overlayCtx.fillStyle = isHeaderHovered ? 'rgba(88, 166, 255, 0.35)' : 'rgba(88, 166, 255, 0.18)';
+    overlayCtx.fillRect(headerRect.x, headerRect.y, headerRect.width, headerRect.height);
     overlayCtx.strokeStyle = 'rgba(88, 166, 255, 0.35)';
     overlayCtx.beginPath();
     overlayCtx.moveTo(boxX, headerY + rowHeight / 2 + headerBodyGap / 4);
@@ -406,8 +533,24 @@ function drawOverlayTables(anchorPoint, data) {
     });
 
     cursorY = headerY + rowHeight + headerBodyGap;
-    overlayCtx.fillStyle = '#e6edf3';
-    info.rows.forEach(row => {
+    info.rows.forEach((row, rowIdx) => {
+      const rowRect = {
+        x: boxX + 1,
+        y: cursorY,
+        width: boxWidth - 2,
+        height: rowHeight,
+      };
+      tableLayout.rows.push(rowRect);
+      const isRowHovered =
+        overlayState.hoverRow &&
+        overlayState.hoverRow.tableIndex === idx &&
+        overlayState.hoverRow.rowType === 'body' &&
+        overlayState.hoverRow.rowIndex === rowIdx;
+      if (isRowHovered) {
+        overlayCtx.fillStyle = 'rgba(88, 166, 255, 0.25)';
+        overlayCtx.fillRect(rowRect.x, rowRect.y, rowRect.width, rowRect.height);
+      }
+      overlayCtx.fillStyle = '#e6edf3';
       row.forEach((text, colIdx) => {
         overlayCtx.fillText(text, columnPositions[colIdx], cursorY + rowHeight / 2);
       });
@@ -421,6 +564,7 @@ function drawOverlayTables(anchorPoint, data) {
 
   cursorY += bottomPadding;
 
+  overlayState.layout = layoutInfo;
   overlayCtx.restore();
 }
 function hideOverlay() {
@@ -434,7 +578,34 @@ function hideOverlay() {
   overlayState.auto = false;
   overlayState.maxWidth = 0;
   overlayState.table = null;
+  overlayState.layout = null;
+  overlayState.hoverRow = null;
   clearOverlayCanvas();
+  setOverlayPointerCapture(false);
+}
+
+function handleOverlayPointerDown(event) {
+  event.stopPropagation();
+  event.preventDefault();
+  if (!overlayState.visible || !overlayState.layout) {
+    return;
+  }
+  const { box } = overlayState.layout;
+  if (!box) {
+    hideOverlay();
+    return;
+  }
+  const rect = overlayCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return;
+  }
+  const scaleX = overlayCanvas.width / rect.width;
+  const scaleY = overlayCanvas.height / rect.height;
+  const x = (event.clientX - rect.left) * scaleX;
+  const y = (event.clientY - rect.top) * scaleY;
+  if (!pointInRect(x, y, box)) {
+    hideOverlay();
+  }
 }
 
 function hideContextMenu() {
@@ -1180,6 +1351,9 @@ function showOverlayWithDescription(nodeName, description, auto = false, maxWidt
   overlayState.auto = auto;
   overlayState.maxWidth = Math.max(0, maxWidth || 0);
   overlayState.table = null;
+  overlayState.layout = null;
+  overlayState.hoverRow = null;
+  setOverlayPointerCapture(true);
   refreshOverlay();
 }
 
@@ -1190,6 +1364,9 @@ function showOverlayWithTables(nodeName, tableData) {
   overlayState.auto = false;
   overlayState.maxWidth = 0;
   overlayState.table = tableData;
+  overlayState.layout = null;
+  overlayState.hoverRow = null;
+  setOverlayPointerCapture(true);
   refreshOverlay();
 }
 
