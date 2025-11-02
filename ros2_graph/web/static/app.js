@@ -1,5 +1,7 @@
 const canvas = document.getElementById('graphCanvas');
 const ctx = canvas.getContext('2d');
+const overlayCanvas = document.getElementById('overlayCanvas');
+const overlayCtx = overlayCanvas.getContext('2d');
 const metaEl = document.getElementById('meta');
 const statusEl = document.getElementById('status');
 const refreshBtn = document.getElementById('refreshBtn');
@@ -49,12 +51,23 @@ let hoverHighlight = {
   nodes: new Set(),
   edges: new Set(),
 };
+let nodeDescriptions = new Map();
+const overlayState = {
+  visible: false,
+  nodeName: '',
+  description: '',
+};
 const BASE_FONT_FAMILY = '"Times New Roman", serif';
 const BASE_FONT_SIZE = 14;
 const BASE_LINE_HEIGHT = 18;
 const POINTS_PER_INCH = 72;
 const MIN_FONT_SIZE_PX = 7;
 const BASE_LINE_HEIGHT_RATIO = BASE_LINE_HEIGHT / BASE_FONT_SIZE;
+const OVERLAY_FONT = '13px "Segoe UI", system-ui, -apple-system, sans-serif';
+const OVERLAY_LINE_HEIGHT = 18;
+const OVERLAY_PADDING = 12;
+const OVERLAY_MAX_WIDTH = 320;
+const OVERLAY_MARGIN = 12;
 
 function resetViewState() {
   viewState.scale = 1;
@@ -64,6 +77,32 @@ function resetViewState() {
 }
 
 resetViewState();
+
+function layoutToView(point) {
+  const scale = viewState.scale || 1;
+  return {
+    x: point.x * scale + viewState.offsetX,
+    y: point.y * scale + viewState.offsetY,
+  };
+}
+
+function clearOverlayCanvas() {
+  overlayCtx.save();
+  overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
+  overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+  overlayCtx.restore();
+}
+
+function hideOverlay() {
+  if (!overlayState.visible) {
+    clearOverlayCanvas();
+    return;
+  }
+  overlayState.visible = false;
+  overlayState.nodeName = '';
+  overlayState.description = '';
+  clearOverlayCanvas();
+}
 
 function toGraphSpace(point) {
   const scale = viewState.scale || 1;
@@ -155,6 +194,139 @@ function setHoverHighlight(highlight) {
   if (lastGraph) {
     renderGraph(lastGraph, lastFingerprint);
   }
+}
+
+function wrapOverlayText(description, maxWidth) {
+  if (!description || !description.length) {
+    return ['No description available.'];
+  }
+  const rawLines = description.split(/\r?\n/);
+  const result = [];
+  rawLines.forEach(line => {
+    if (line.length === 0) {
+      result.push('');
+      return;
+    }
+    const indentMatch = line.match(/^(\s+)/);
+    const indent = indentMatch ? indentMatch[1] : '';
+    const trimmed = line.trim();
+    if (!trimmed) {
+      result.push(indent);
+      return;
+    }
+    const words = trimmed.split(/\s+/);
+    let current = indent + words[0];
+    for (let i = 1; i < words.length; i += 1) {
+      const word = words[i];
+      const candidate = current + ' ' + word;
+      if (overlayCtx.measureText(candidate).width <= maxWidth || current === indent) {
+        current = candidate;
+      } else {
+        result.push(current);
+        current = indent + word;
+      }
+    }
+    result.push(current);
+  });
+  return result;
+}
+
+function drawOverlayTextbox(anchorPoint, nodeName, description) {
+  overlayCtx.save();
+  overlayCtx.setTransform(1, 0, 0, 1, 0, 0);
+  overlayCtx.font = OVERLAY_FONT;
+  overlayCtx.textBaseline = 'top';
+  overlayCtx.textAlign = 'left';
+  const maxTextWidth = OVERLAY_MAX_WIDTH - OVERLAY_PADDING * 2;
+  const lines = wrapOverlayText(description, maxTextWidth);
+  let maxWidth = 0;
+  lines.forEach(line => {
+    const width = overlayCtx.measureText(line).width;
+    if (width > maxWidth) {
+      maxWidth = width;
+    }
+  });
+  const boxWidth = Math.min(OVERLAY_MAX_WIDTH, Math.max(maxWidth, 120) + OVERLAY_PADDING * 2);
+  const boxHeight = OVERLAY_PADDING * 2 + lines.length * OVERLAY_LINE_HEIGHT;
+  let boxX = anchorPoint.x + OVERLAY_MARGIN;
+  let boxY = anchorPoint.y - boxHeight - OVERLAY_MARGIN;
+  if (boxX + boxWidth > overlayCanvas.width - OVERLAY_MARGIN) {
+    boxX = overlayCanvas.width - OVERLAY_MARGIN - boxWidth;
+  }
+  if (boxX < OVERLAY_MARGIN) {
+    boxX = OVERLAY_MARGIN;
+  }
+  if (boxY < OVERLAY_MARGIN) {
+    boxY = anchorPoint.y + OVERLAY_MARGIN;
+    if (boxY + boxHeight > overlayCanvas.height - OVERLAY_MARGIN) {
+      boxY = overlayCanvas.height - OVERLAY_MARGIN - boxHeight;
+    }
+  }
+  const radius = 10;
+  overlayCtx.fillStyle = 'rgba(13, 17, 23, 0.95)';
+  overlayCtx.strokeStyle = '#58a6ff';
+  overlayCtx.lineWidth = 2;
+  overlayCtx.beginPath();
+  overlayCtx.moveTo(boxX + radius, boxY);
+  overlayCtx.lineTo(boxX + boxWidth - radius, boxY);
+  overlayCtx.quadraticCurveTo(boxX + boxWidth, boxY, boxX + boxWidth, boxY + radius);
+  overlayCtx.lineTo(boxX + boxWidth, boxY + boxHeight - radius);
+  overlayCtx.quadraticCurveTo(
+    boxX + boxWidth,
+    boxY + boxHeight,
+    boxX + boxWidth - radius,
+    boxY + boxHeight
+  );
+  overlayCtx.lineTo(boxX + radius, boxY + boxHeight);
+  overlayCtx.quadraticCurveTo(boxX, boxY + boxHeight, boxX, boxY + boxHeight - radius);
+  overlayCtx.lineTo(boxX, boxY + radius);
+  overlayCtx.quadraticCurveTo(boxX, boxY, boxX + radius, boxY);
+  overlayCtx.closePath();
+  overlayCtx.fill();
+  overlayCtx.stroke();
+
+  lines.forEach((line, idx) => {
+    const textX = boxX + OVERLAY_PADDING;
+    const textY = boxY + OVERLAY_PADDING + idx * OVERLAY_LINE_HEIGHT;
+    overlayCtx.fillStyle = idx === 0 ? '#58a6ff' : '#e6edf3';
+    overlayCtx.fillText(line, textX, textY);
+  });
+  overlayCtx.restore();
+}
+
+function refreshOverlay() {
+  clearOverlayCanvas();
+  if (!overlayState.visible) {
+    return;
+  }
+  const geometry = currentScene.nodes?.get(overlayState.nodeName);
+  if (!geometry) {
+    hideOverlay();
+    return;
+  }
+  overlayState.description = resolveOverlayDescription(overlayState.nodeName, geometry);
+  const anchorPoint = layoutToView(geometry.center);
+  drawOverlayTextbox(anchorPoint, overlayState.nodeName, overlayState.description);
+}
+
+function resolveOverlayDescription(nodeName, geometry) {
+  let description = nodeDescriptions.get(nodeName);
+  if (!description) {
+    if (geometry?.type === 'topic') {
+      description = buildTopicDescription(lastGraph, nodeName);
+    } else {
+      description = buildDefaultNodeDescription(nodeName);
+    }
+  }
+  return description;
+}
+
+function showOverlayForNode(nodeName, geometry) {
+  const description = resolveOverlayDescription(nodeName, geometry);
+  overlayState.visible = true;
+  overlayState.nodeName = nodeName;
+  overlayState.description = description;
+  refreshOverlay();
 }
 
 function stripQuotes(value) {
@@ -794,6 +966,8 @@ function resizeCanvas() {
   const headerHeight = document.querySelector('header').offsetHeight;
   canvas.width = window.innerWidth;
   canvas.height = Math.max(240, window.innerHeight - headerHeight - 40);
+  overlayCanvas.width = canvas.width;
+  overlayCanvas.height = canvas.height;
   renderGraph(lastGraph, lastFingerprint);
 }
 
@@ -805,7 +979,9 @@ canvas.addEventListener('pointermove', handlePointerMove);
 canvas.addEventListener('pointerup', handlePointerUp);
 canvas.addEventListener('pointercancel', handlePointerCancel);
 canvas.addEventListener('pointerleave', handlePointerCancel);
+canvas.addEventListener('contextmenu', handleContextMenu);
 canvas.addEventListener('dblclick', handleDoubleClick);
+document.addEventListener('keydown', handleKeyDown);
 
 const HIDDEN_NAME_PATTERNS = [/\/rosout\b/i];
 
@@ -814,6 +990,117 @@ function isHiddenGraphName(name) {
     return false;
   }
   return HIDDEN_NAME_PATTERNS.some(pattern => pattern.test(name));
+}
+
+function splitNodeName(nodeName) {
+  if (!nodeName) {
+    return { namespace: '/', basename: '' };
+  }
+  const slashIndex = nodeName.lastIndexOf('/');
+  if (slashIndex <= 0) {
+    const cleaned = nodeName.replace(/^\//, '');
+    return { namespace: '/', basename: cleaned || nodeName };
+  }
+  const namespace = slashIndex === 0 ? '/' : nodeName.slice(0, slashIndex);
+  const basename = nodeName.slice(slashIndex + 1) || '/';
+  return { namespace, basename };
+}
+
+function buildDefaultNodeDescription(nodeName) {
+  const parts = splitNodeName(nodeName);
+  const lines = [`Node: ${nodeName}`];
+  if (parts.basename && parts.basename !== nodeName) {
+    lines.push(`Base name: ${parts.basename}`);
+  }
+  if (parts.namespace && parts.namespace !== nodeName) {
+    lines.push(`Namespace: ${parts.namespace}`);
+  } else if (!parts.namespace) {
+    lines.push('Namespace: /');
+  }
+  if (lines.length === 1) {
+    lines.push('Namespace: /');
+  }
+  lines.push('');
+  lines.push('No description available.');
+  return lines.join('\n');
+}
+
+function buildNodeDescriptions(graph) {
+  const result = new Map();
+  if (!graph || !graph.nodes || !graph.nodes.length) {
+    return result;
+  }
+  graph.nodes.forEach(node => {
+    result.set(node, buildDefaultNodeDescription(node));
+  });
+  return result;
+}
+
+function buildTopicDescription(graph, topicName) {
+  if (!graph) {
+    return `Topic: ${topicName}\nNo additional information available.`;
+  }
+  const topics = graph.topics || {};
+  const types = topics[topicName] || [];
+  const nodes = new Set(graph.nodes || []);
+  const edges = graph.edges || [];
+  const publishers = new Map();
+  const subscribers = new Map();
+
+  const addEntry = (map, name, qos) => {
+    if (!map.has(name)) {
+      map.set(name, new Set());
+    }
+    if (qos && qos.length) {
+      map.get(name).add(qos);
+    }
+  };
+
+  edges.forEach(edge => {
+    if (edge.end === topicName && nodes.has(edge.start)) {
+      addEntry(publishers, edge.start, edge.qos || '');
+    } else if (edge.start === topicName && nodes.has(edge.end)) {
+      addEntry(subscribers, edge.end, edge.qos || '');
+    }
+  });
+
+  const lines = [`Topic: ${topicName}`, ''];
+  if (types.length) {
+    lines.push('Type(s):');
+    types.forEach(type => {
+      lines.push(`  - ${type}`);
+    });
+  } else {
+    lines.push('Type(s): (unknown)');
+  }
+  lines.push('');
+  lines.push('Publishers:');
+  if (publishers.size) {
+    Array.from(publishers.keys())
+      .sort()
+      .forEach(name => {
+        const qosSet = publishers.get(name) ?? new Set();
+      const qosSuffix = qosSet.size ? ` [${Array.from(qosSet).join(' | ')}]` : '';
+      lines.push(`  - ${name}${qosSuffix}`);
+    });
+  } else {
+    lines.push('  (none)');
+  }
+  lines.push('');
+  lines.push('Subscribers:');
+  if (subscribers.size) {
+    Array.from(subscribers.keys())
+      .sort()
+      .forEach(name => {
+        const qosSet = subscribers.get(name) ?? new Set();
+      const qosSuffix = qosSet.size ? ` [${Array.from(qosSet).join(' | ')}]` : '';
+      lines.push(`  - ${name}${qosSuffix}`);
+    });
+  } else {
+    lines.push('  (none)');
+  }
+
+  return lines.join('\n');
 }
 
 function renderGraph(graph, fingerprint = lastFingerprint) {
@@ -826,6 +1113,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       nodes: new Map(),
       edges: [],
     };
+    hideOverlay();
     return;
   }
 
@@ -837,6 +1125,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
   }
 
   lastGraph = graph;
+  nodeDescriptions = buildNodeDescriptions(graph);
   const width = canvas.width;
   const height = canvas.height;
   const nodeNames = (graph.nodes || []).filter(name => !isHiddenGraphName(name));
@@ -847,6 +1136,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       nodes: new Map(),
       edges: [],
     };
+    hideOverlay();
     ctx.save();
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
@@ -862,6 +1152,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       nodes: new Map(),
       edges: [],
     };
+    hideOverlay();
     ctx.save();
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
@@ -900,6 +1191,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       nodes: new Map(),
       edges: [],
     };
+    hideOverlay();
     ctx.save();
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
@@ -948,6 +1240,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
       nodes: new Map(),
       edges: [],
     };
+    hideOverlay();
     ctx.save();
     ctx.fillStyle = '#c9d1d9';
     ctx.font = '16px sans-serif';
@@ -1086,6 +1379,7 @@ function renderGraph(graph, fingerprint = lastFingerprint) {
     nodes: nodesMap,
     edges: sceneEdges,
   };
+  refreshOverlay();
 }
 
 function handleWheel(event) {
@@ -1118,6 +1412,7 @@ function handlePointerDown(event) {
     return;
   }
   event.preventDefault();
+  hideOverlay();
   const point = getCanvasPoint(event);
   const graphPoint = toGraphSpace(point);
   const nodeHit = findNodeAt(graphPoint);
@@ -1194,6 +1489,21 @@ function handlePointerCancel(event) {
   clearHoverHighlight();
 }
 
+function handleContextMenu(event) {
+  event.preventDefault();
+  if (!lastGraph) {
+    return;
+  }
+  const canvasPoint = getCanvasPoint(event);
+  const graphPoint = toGraphSpace(canvasPoint);
+  const nodeHit = findNodeAt(graphPoint);
+  if (nodeHit) {
+    showOverlayForNode(nodeHit.name, nodeHit.geometry);
+    return;
+  }
+  hideOverlay();
+}
+
 function handleDoubleClick(event) {
   if (!lastGraph) {
     return;
@@ -1208,6 +1518,12 @@ function handleDoubleClick(event) {
   }
   setSelection(null, 'clear');
   setHoverHighlight(null);
+}
+
+function handleKeyDown(event) {
+  if (event.key === 'Escape') {
+    hideOverlay();
+  }
 }
 
 function drawEdgeWithPath(points, highlightState) {

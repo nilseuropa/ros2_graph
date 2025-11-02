@@ -12,7 +12,10 @@
     <div id="status">initializing…</div>
     <button id="refreshBtn" type="button">Refresh now</button>
   </header>
-  <canvas id="graphCanvas"></canvas>
+  <div id="canvasContainer">
+    <canvas id="graphCanvas"></canvas>
+    <canvas id="overlayCanvas"></canvas>
+  </div>
   <div id="footer">Data source: /graph endpoint (refresh every 2s)</div>
   <script src="/app.js" type="module"></script>
 </body>
