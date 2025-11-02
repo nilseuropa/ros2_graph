@@ -24,6 +24,7 @@ HIDE_DYNAMIC_RECONFIGURE = True
 HIDE_SINGLE_CONNECTION_TOPICS = False
 HIDE_DEAD_END_TOPICS = False
 HIDE_TF_NODES = False
+INTERNAL_NODE_NAMES = {'/ros2_graph_metrics_probe', 'ros2_graph_metrics_probe'}
 
 
 @dataclass(frozen=True)
@@ -301,6 +302,7 @@ class GraphBuilder:
             }
             if name
         }
+        excluded_nodes.update(INTERNAL_NODE_NAMES)
 
         if excluded_nodes:
             node_names.difference_update(excluded_nodes)
