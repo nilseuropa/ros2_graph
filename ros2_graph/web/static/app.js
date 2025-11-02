@@ -215,7 +215,7 @@ function showContextMenu(clientPoint, target) {
 
 async function handleContextMenuAction(action, target) {
   hideContextMenu();
-  if (!target || target.type !== 'topic-edge') {
+  if (!target || (target.type !== 'topic-edge' && target.type !== 'topic-node')) {
     return;
   }
   const topicGeometry = currentScene.nodes?.get(target.topicName);
@@ -312,6 +312,17 @@ function resolveTopicEdgeTarget(edge) {
   return null;
 }
 
+function resolveTopicNodeTarget(nodeHit) {
+  if (!nodeHit?.geometry || nodeHit.geometry.type !== 'topic') {
+    return null;
+  }
+  return {
+    type: 'topic-node',
+    topicName: nodeHit.name,
+    edgeId: null,
+  };
+}
+
 function validateContextMenuTarget() {
   if (!contextMenuState.visible || !contextMenuState.target) {
     return;
@@ -319,6 +330,12 @@ function validateContextMenuTarget() {
   if (contextMenuState.target.type === 'topic-edge') {
     const stillExists = currentScene.edges?.some(edge => edge.id === contextMenuState.target.edgeId);
     if (!stillExists) {
+      hideContextMenu();
+    }
+    return;
+  }
+  if (contextMenuState.target.type === 'topic-node') {
+    if (!currentScene.nodes?.has(contextMenuState.target.topicName)) {
       hideContextMenu();
     }
   }
@@ -1833,6 +1850,15 @@ function handleContextMenu(event) {
   }
   const canvasPoint = getCanvasPoint(event);
   const graphPoint = toGraphSpace(canvasPoint);
+  const nodeHit = findNodeAt(graphPoint);
+  if (nodeHit && nodeHit.geometry?.type === 'topic') {
+    hideOverlay();
+    const target = resolveTopicNodeTarget(nodeHit);
+    if (target) {
+      showContextMenu({ x: event.clientX, y: event.clientY }, target);
+      return;
+    }
+  }
   const edgeHit = findEdgeAt(graphPoint);
   if (edgeHit) {
     const target = resolveTopicEdgeTarget(edgeHit);
@@ -1842,7 +1868,6 @@ function handleContextMenu(event) {
       return;
     }
   }
-  const nodeHit = findNodeAt(graphPoint);
   if (nodeHit) {
     hideContextMenu();
     showOverlayForNode(nodeHit.name, nodeHit.geometry);
