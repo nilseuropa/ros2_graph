@@ -46,8 +46,21 @@ HIDE_DYNAMIC_RECONFIGURE = True
 HIDE_SINGLE_CONNECTION_TOPICS = False
 HIDE_DEAD_END_TOPICS = False
 HIDE_TF_NODES = False
-INTERNAL_NODE_NAMES = {'/ros2_graph_metrics_probe', 'ros2_graph_metrics_probe'}
-INTERNAL_NODE_PREFIXES = ('/tf_listener', '/tf2_buffer', '/tf_static_listener', '/transform_listener')
+INTERNAL_NODE_NAMES = {
+    '/ros2_graph_metrics_probe',
+    'ros2_graph_metrics_probe',
+    '/ros2cli_daemon',
+    'ros2cli_daemon',
+}
+INTERNAL_NODE_PREFIXES = (
+    '/tf_listener',
+    '/tf2_buffer',
+    '/tf_static_listener',
+    '/transform_listener',
+    '/_ros2cli_daemon',
+    '_ros2cli_daemon',
+    'ros2cli_daemon_',
+)
 
 
 @dataclass(frozen=True)
