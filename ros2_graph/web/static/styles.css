@@ -72,6 +72,40 @@ header h1 {
   pointer-events: none;
 }
 
+#contextMenu {
+  position: absolute;
+  display: none;
+  flex-direction: column;
+  gap: 0;
+  min-width: 160px;
+  background: rgba(22, 27, 34, 0.98);
+  border: 1px solid rgba(88, 166, 255, 0.4);
+  border-radius: 6px;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.4);
+  z-index: 10;
+  overflow: hidden;
+}
+
+#contextMenu.visible {
+  display: flex;
+}
+
+#contextMenu button {
+  background: transparent;
+  color: var(--text);
+  border: none;
+  text-align: left;
+  padding: 0.6rem 0.9rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+#contextMenu button:hover,
+#contextMenu button:focus {
+  background: rgba(88, 166, 255, 0.2);
+  outline: none;
+}
+
 #footer {
   padding: 0.5rem 1rem;
   font-size: 0.8rem;
