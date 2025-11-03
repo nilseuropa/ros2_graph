@@ -165,6 +165,7 @@ if (overlayCanvas) {
   overlayCanvas.addEventListener('pointermove', handleOverlayPointerMove);
   overlayCanvas.addEventListener('pointerleave', handleOverlayPointerLeave);
   overlayCanvas.addEventListener('pointerdown', handleOverlayPointerDown);
+  overlayCanvas.addEventListener('dblclick', handleOverlayDoubleClick);
 }
 const contextMenu = document.getElementById('contextMenu');
 const contextMenuState = {
@@ -496,7 +497,7 @@ function drawOverlayTables(anchorPoint, data) {
   }
 
   processedTables.forEach((info, idx) => {
-    const tableLayout = { header: null, rows: [] };
+    const tableLayout = { header: null, rows: [], columnBounds: [], columnPositions: [], headers: info.headers };
     layoutInfo.tables[idx] = tableLayout;
     if (!info.columnCount) {
       return;
@@ -535,6 +536,19 @@ function drawOverlayTables(anchorPoint, data) {
       columnPositions.push(cursorX);
       cursorX += width + info.spacing;
     });
+    tableLayout.columnPositions = columnPositions.slice();
+    const columnBounds = columnPositions.map((pos, colIdx) => {
+      const prevEdge = colIdx === 0 ? baseX : (columnPositions[colIdx - 1] + pos) / 2;
+      const nextEdge =
+        colIdx === columnPositions.length - 1
+          ? boxX + boxWidth - paddingX
+          : (pos + columnPositions[colIdx + 1]) / 2;
+      return {
+        start: Math.max(boxX, prevEdge),
+        end: Math.min(boxX + boxWidth, nextEdge),
+      };
+    });
+    tableLayout.columnBounds = columnBounds;
 
     overlayCtx.fillStyle = '#58a6ff';
     info.headers.forEach((text, colIdx) => {
@@ -614,6 +628,126 @@ function handleOverlayPointerDown(event) {
   const y = (event.clientY - rect.top) * scaleY;
   if (!pointInRect(x, y, box)) {
     hideOverlay();
+  }
+}
+
+function handleOverlayDoubleClick(event) {
+  if (!overlayCanvas) {
+    return;
+  }
+  if (!overlayState.visible || !overlayState.layout || !overlayState.table) {
+    return;
+  }
+  const parameterEntries = overlayState.table?.context?.parameters;
+  if (!Array.isArray(parameterEntries) || parameterEntries.length === 0) {
+    return;
+  }
+  const tables = Array.isArray(overlayState.layout.tables) ? overlayState.layout.tables : [];
+  if (!tables.length) {
+    return;
+  }
+  const dataTables = Array.isArray(overlayState.table.tables) ? overlayState.table.tables : [];
+  if (!dataTables.length) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  const rect = overlayCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return;
+  }
+  const scaleX = overlayCanvas.width / rect.width;
+  const scaleY = overlayCanvas.height / rect.height;
+  const x = (event.clientX - rect.left) * scaleX;
+  const y = (event.clientY - rect.top) * scaleY;
+
+  for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
+    const layout = tables[tableIndex];
+    const tableData = dataTables[tableIndex];
+    if (!layout || !tableData) {
+      continue;
+    }
+    const headers = Array.isArray(tableData.headers) ? tableData.headers : [];
+    const isParameterTable =
+      headers.length >= 2 &&
+      String(headers[0]).toLowerCase() === 'name' &&
+      String(headers[1]).toLowerCase() === 'value';
+    if (!isParameterTable) {
+      continue;
+    }
+    const columnBounds = Array.isArray(layout.columnBounds) ? layout.columnBounds : [];
+    const valueBounds = columnBounds[1];
+    if (!valueBounds) {
+      continue;
+    }
+    if (x < valueBounds.start || x > valueBounds.end) {
+      continue;
+    }
+    const rows = Array.isArray(layout.rows) ? layout.rows : [];
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      const rowRect = rows[rowIndex];
+      if (pointInRect(x, y, rowRect)) {
+        void editParameterValue(rowIndex);
+        return;
+      }
+    }
+  }
+}
+
+async function editParameterValue(rowIndex) {
+  const nodeName = overlayState.nodeName;
+  const parameters = overlayState.table?.context?.parameters;
+  if (!nodeName || !Array.isArray(parameters) || rowIndex < 0 || rowIndex >= parameters.length) {
+    return;
+  }
+  const entry = parameters[rowIndex];
+  const paramName = typeof entry?.name === 'string' ? entry.name : '';
+  const typeIdRaw = entry?.type_id;
+  const typeId = Number(typeIdRaw);
+  if (!paramName || !Number.isFinite(typeId)) {
+    statusEl.textContent = `Unable to edit parameter for row ${rowIndex + 1}`;
+    return;
+  }
+  if (typeof window === 'undefined' || typeof window.prompt !== 'function') {
+    statusEl.textContent = 'Interactive parameter editing is unavailable.';
+    return;
+  }
+  const typeLabel = entry?.type ? String(entry.type) : '';
+  const promptLabel = typeLabel ? `${paramName} (${typeLabel})` : paramName;
+  const defaultValue = entry?.raw_value ?? entry?.value ?? '';
+  const isArrayType = /\[\]$/.test(typeLabel);
+  const promptMessage = isArrayType
+    ? `Set parameter ${promptLabel}\nEnter a JSON array value`
+    : `Set parameter ${promptLabel}`;
+  const nextValue = window.prompt(promptMessage, defaultValue);
+  if (nextValue === null) {
+    statusEl.textContent = `Update cancelled for ${paramName}`;
+    return;
+  }
+  try {
+    statusEl.textContent = `Updating ${paramName} on ${nodeName}…`;
+    await requestNodeTool('set_parameter', nodeName, {
+      method: 'POST',
+      body: {
+        name: paramName,
+        type_id: typeId,
+        value: nextValue,
+      },
+    });
+  } catch (err) {
+    const message = err?.message || String(err);
+    statusEl.textContent = `Failed to update ${paramName} on ${nodeName}: ${message}`;
+    return;
+  }
+  try {
+    const payload = await requestNodeTool('parameters', nodeName);
+    showNodeParametersOverlay(nodeName, payload);
+    statusEl.textContent = `Updated ${paramName} on ${nodeName}`;
+  } catch (err) {
+    const message = err?.message || String(err);
+    statusEl.textContent = `Updated ${paramName}, but refresh failed: ${message}`;
   }
 }
 
@@ -921,19 +1055,49 @@ async function requestTopicTool(action, topicName, peerName) {
   return payload;
 }
 
-async function requestNodeTool(action, nodeName) {
-  const params = new URLSearchParams();
-  params.set('action', action);
-  params.set('node', nodeName);
+async function requestNodeTool(action, nodeName, options = {}) {
+  const method = (options?.method || 'GET').toUpperCase();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TOPIC_TOOL_TIMEOUT);
   let response;
   let payload = {};
   try {
-    response = await fetch(`/node_tool?${params.toString()}`, {
-      cache: 'no-store',
-      signal: controller.signal,
-    });
+    if (method === 'GET') {
+      const params = new URLSearchParams();
+      params.set('action', action);
+      params.set('node', nodeName);
+      const extraParams = options?.params;
+      if (extraParams && typeof extraParams === 'object') {
+        Object.entries(extraParams).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            params.set(key, String(value));
+          }
+        });
+      }
+      response = await fetch(`/node_tool?${params.toString()}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+    } else if (method === 'POST') {
+      const body = Object.assign({}, options?.body || {});
+      if (!Object.prototype.hasOwnProperty.call(body, 'action')) {
+        body.action = action;
+      }
+      if (!Object.prototype.hasOwnProperty.call(body, 'node')) {
+        body.node = nodeName;
+      }
+      response = await fetch('/node_tool', {
+        method: 'POST',
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } else {
+      throw new Error(`unsupported method ${method}`);
+    }
     try {
       payload = await response.json();
     } catch (err) {
@@ -1190,13 +1354,12 @@ function showNodeParametersOverlay(nodeName, payload) {
   if (payload.namespace) {
     titleLines.push(`Namespace: ${payload.namespace}`);
   }
-  const rows = Array.isArray(payload.parameters)
-    ? payload.parameters.map(entry => {
-        const name = entry?.name ?? '(unknown)';
-        const value = entry?.value ?? '';
-        return [name, String(value)];
-      })
-    : [];
+  const parameterEntries = Array.isArray(payload.parameters) ? payload.parameters : [];
+  const rows = parameterEntries.map(entry => {
+    const name = entry?.name ?? '(unknown)';
+    const value = entry?.value ?? '';
+    return [name, String(value)];
+  });
   const count = rows.length;
 
   if (!rows.length) {
@@ -1213,10 +1376,13 @@ function showNodeParametersOverlay(nodeName, payload) {
           rows,
         },
       ],
+      context: {
+        parameters: parameterEntries,
+      },
     });
   }
 
-  updateNodeFeatureInfoFromParameters(nodeName, payload.parameters);
+  updateNodeFeatureInfoFromParameters(nodeName, parameterEntries);
   statusEl.textContent = `Parameters for ${nodeName}: ${count} found`;
 }
 

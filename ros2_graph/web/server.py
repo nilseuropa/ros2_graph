@@ -63,6 +63,34 @@ class GraphWebServer:
                 else:
                     self.send_error(404, 'Not Found')
 
+            def do_POST(self) -> None:
+                raw_path = self.path
+                if '?' in raw_path:
+                    path, query = raw_path.split('?', 1)
+                    params = parse_qs(query, keep_blank_values=True)
+                else:
+                    path = raw_path
+                    params = {}
+                length_header = self.headers.get('Content-Length', '0')
+                try:
+                    length = int(length_header)
+                except (TypeError, ValueError):
+                    length = 0
+                body = b''
+                if length > 0:
+                    body = self.rfile.read(length)
+                try:
+                    payload = json.loads(body.decode('utf-8')) if body else {}
+                    if payload is None:
+                        payload = {}
+                except json.JSONDecodeError:
+                    parent._send_json(self, 400, {'error': 'invalid JSON body'})
+                    return
+                if path == '/node_tool':
+                    parent._serve_node_tool(self, params, payload)
+                else:
+                    self.send_error(404, 'Not Found')
+
             def log_message(self, format: str, *args) -> None:  # noqa: A003
                 parent._logger.debug(f'web: {format % args}')
 
@@ -185,17 +213,32 @@ class GraphWebServer:
             status = 500
         self._send_json(handler, status, payload)
 
-    def _serve_node_tool(self, handler: BaseHTTPRequestHandler, params: Dict[str, list]) -> None:
+    def _serve_node_tool(
+        self,
+        handler: BaseHTTPRequestHandler,
+        params: Dict[str, list],
+        body: Optional[Dict[str, object]] = None,
+    ) -> None:
         if self._node_tool_handler is None:
             self._send_json(handler, 503, {'error': 'node tools unavailable'})
             return
-        node = params.get('node', [''])[0].strip()
-        action = params.get('action', [''])[0].strip().lower()
+        extras: Optional[Dict[str, object]] = None
+        if isinstance(body, dict):
+            extras = dict(body)
+        node = ''
+        action = ''
+        if extras:
+            node = str(extras.get('node', '') or '').strip()
+            action = str(extras.get('action', '') or '').strip().lower()
+        if not node:
+            node = params.get('node', [''])[0].strip()
+        if not action:
+            action = params.get('action', [''])[0].strip().lower()
         if not node or not action:
             self._send_json(handler, 400, {'error': 'missing node or action'})
             return
         try:
-            status, payload = self._node_tool_handler(action, node)
+            status, payload = self._node_tool_handler(action, node, extras)
         except Exception as exc:  # pragma: no cover - defensive
             tb = traceback.format_exc()
             self._logger.error(f'node_tool handler raised an exception: {exc}\n{tb}')
