@@ -57,6 +57,7 @@ ros2 run ros2_graph ros2_graph \
 The client lives entirely in `ros2_graph/web/static`. Point your browser at the node and
 you’ll see a two-layer canvas (graph + overlay) and a status bar describing the latest
 interaction.
+![Canvas](doc/graph_canvas.png)
 
 ### Canvas Basics
 
@@ -66,19 +67,32 @@ interaction.
   can compare relationships.
 - **Hover hints** – Move the mouse over nodes or edges to preview connections; the status
   banner summarises the focused element.
-- **Context menu** – Right-click nodes or topics for actions (Info, Stats, Services,
-  Parameters). The menu anchors to your pointer.
+- **Context menu** – Right-click nodes or topics for actions (Info, Stats, Echo,
+  Services, Parameters). The menu anchors to your pointer.
 
 ### Node & Topic Overlays
 
-- **Info (nodes/topics)** – Shows namespaces, endpoint counts, and recent metadata in a
+**Info (nodes/topics)** – Shows namespaces, endpoint counts, and recent metadata in a
   floating card. The overlay tracks the node even if you pan the view.
-- **Topic Stats** – The UI requests a short-lived probe that subscribes for ~2.5 seconds
+![Node info](doc/node_info.png)
+
+**Topic Stats** – The UI requests a short-lived probe that subscribes for ~2.5 seconds
   and returns message frequency and bandwidth estimates. Results are cached on the server
   side to avoid redundant sampling.
+![Topic stats](doc/topic_stats.png)
+
+### Topic Echo
+1. Right-click a topic edge or topic bubble → **Echo**.
+2. The server creates a lightweight subscriber dedicated to that topic (the helper node is
+   hidden from the visual graph).
+3. A live overlay shows the most recent message header (stamp, frame id, etc.) and the
+   `data` field, updating every few hundred milliseconds as new messages arrive.
+4. Click elsewhere or press `Esc` to stop streaming; the subscriber is torn down
+   immediately to avoid lingering traffic.
+
+![Topic echo](doc/topic_echo.png)
 
 ### Parameter Editor
-
 1. Right-click a node → **Parameters**.
 2. A table lists every declared parameter (name, value, type).
 3. **Single-click** any value to open the parameter editor.
@@ -89,8 +103,11 @@ interaction.
 4. Submit to call `set_parameter`. Success triggers an immediate refresh so you can see
    the new value reflected in the table.
 
-### Service Caller
+![Parameter list](doc/node_params.png)
 
+![Parameter editor](doc/set_param.png)
+
+### Service Caller
 1. Right-click a node → **Services**.
 2. Click a service row to open the service caller modal.
    - The backend introspects the service type (`rosidl_parser` + `rosidl_runtime_py`)
@@ -100,6 +117,10 @@ interaction.
    - The modal shows an example request (when available) and caches the most recent
      response for reference.
 3. Hit **Call** to invoke the service. The response is rendered as pretty-printed JSON.
+
+![Service list](doc/node_services.png)
+
+![Service call](doc/service_call.png)
 
 ### Status & keyboard shortcuts
 
@@ -150,9 +171,47 @@ Returns the latest graph snapshot. Example:
 | ------ | -------- |
 | `info` | `{"action":"info","topic":"/chatter","data":{"topic":"/chatter","types":["std_msgs/msg/String"],"publishers":[{"name":"/talker","qos":["RELIABLE"]}], "subscribers":[...]}}` |
 | `stats` | `{"action":"stats","topic":"/chatter","duration":2.5,"message_count":42,"average_hz":16.8,"average_bps":5120,"max_bytes":512,"cached":false}` |
+| `echo` | Streaming interface, see below for modes and payload format. |
 
 Errors use standard HTTP codes with an `{"error": "message"}` body. Topic statistics
 require `rosidl_runtime_py` to introspect message types.
+
+For `action=echo` the server exposes a lightweight streaming protocol:
+
+- **Start** – `GET /topic_tool?action=echo&topic=/foo&mode=start` returns a unique
+  `stream_id`. The response includes the topic type, message count so far, and the most
+  recent sample (if any).
+- **Poll** – Re-use the identifier with
+  `GET /topic_tool?action=echo&topic=/foo&mode=poll&stream=<id>` to receive incremental
+  updates. Poll as frequently as you need—the server throttles the updates to the most
+  recent message.
+- **Stop** – `GET /topic_tool?action=echo&topic=/foo&mode=stop&stream=<id>` releases the
+  subscriber. Idle streams are also garbage-collected automatically after ~30 seconds of
+  inactivity.
+
+Example payload:
+
+```json
+{
+  "action": "echo",
+  "topic": "/chatter",
+  "stream_id": "echo-17f2a-3",
+  "type": "std_msgs/msg/String",
+  "count": 12,
+  "sample": {
+    "header": {"stamp": {"sec": 1700000000, "nanosec": 123456789}, "frame_id": ""},
+    "data": "hello world",
+    "data_text": "hello world",
+    "received_at": 1700000123.456789,
+    "received_iso": "2024-11-03 12:35:23"
+  },
+  "timeout": 30.0
+}
+```
+
+The `sample.data_text` field is a truncated, single-line representation that is safe to
+display in constrained UIs, while `sample.data` preserves the full primitive/array/map
+structure for programmatic consumption.
 
 ### 3. Node Tools
 

@@ -62,6 +62,7 @@ const overlayState = {
   table: null,
   hoverRow: null,
   layout: null,
+  scrollOffset: 0,
 };
 
 const PARAMETER_NOT_SET = 0;
@@ -128,6 +129,14 @@ const serviceCallerState = {
 };
 
 let serviceFieldIdCounter = 0;
+
+const topicEchoState = {
+  active: false,
+  topicName: '',
+  peerName: '',
+  streamId: '',
+  timer: null,
+};
 
 const SERVICE_BOOLEAN_TYPES = new Set(['bool', 'boolean']);
 const SERVICE_INTEGER_TYPES = new Set([
@@ -265,10 +274,57 @@ function handleOverlayPointerLeave() {
   }
 }
 
+function handleOverlayWheel(event) {
+  if (!overlayCanvas || !overlayState.visible) {
+    return;
+  }
+  const layout = overlayState.layout;
+  if (!layout || !layout.scrollable) {
+    return;
+  }
+  const rect = overlayCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return;
+  }
+  const scaleX = overlayCanvas.width / rect.width;
+  const scaleY = overlayCanvas.height / rect.height;
+  const x = (event.clientX - rect.left) * scaleX;
+  const y = (event.clientY - rect.top) * scaleY;
+  const box = layout.box;
+  if (!box || !pointInRect(x, y, box)) {
+    return;
+  }
+  const maxScroll = layout.maxScroll || 0;
+  if (maxScroll <= 0) {
+    return;
+  }
+
+  event.preventDefault();
+  let delta = event.deltaY;
+  if (!Number.isFinite(delta) || delta === 0) {
+    return;
+  }
+  if (event.deltaMode === 1) {
+    const lineHeight = layout.rowHeight || OVERLAY_LINE_HEIGHT;
+    delta *= lineHeight;
+  } else if (event.deltaMode === 2) {
+    const boxHeight = layout.boxHeight || box.height || 1;
+    delta *= boxHeight;
+  }
+  const next = Math.min(maxScroll, Math.max(0, (overlayState.scrollOffset || 0) + delta));
+  if (next === overlayState.scrollOffset) {
+    return;
+  }
+  overlayState.scrollOffset = next;
+  refreshOverlay();
+  updateOverlayHoverPosition(x, y);
+}
+
 if (overlayCanvas) {
   overlayCanvas.addEventListener('pointermove', handleOverlayPointerMove);
   overlayCanvas.addEventListener('pointerleave', handleOverlayPointerLeave);
   overlayCanvas.addEventListener('pointerdown', handleOverlayPointerDown);
+  overlayCanvas.addEventListener('wheel', handleOverlayWheel, { passive: false });
 }
 const contextMenu = document.getElementById('contextMenu');
 const contextMenuState = {
@@ -356,6 +412,7 @@ const OVERLAY_PADDING = 12;
 const OVERLAY_MAX_WIDTH = 320;
 const OVERLAY_MARGIN = 12;
 const TOPIC_TOOL_TIMEOUT = 15000;
+const TOPIC_ECHO_REFRESH_MS = 750;
 const FEATURE_PARAM_ORDER = ['name', 'class', 'version', 'gui_version', 'state'];
 const FEATURE_LABELS = {
   name: 'Name',
@@ -448,6 +505,7 @@ function getContextMenuItemsForTarget(target) {
     return [
       { action: 'info', label: 'Info' },
       { action: 'stats', label: 'Stats' },
+      { action: 'echo', label: 'Echo' },
     ];
   }
   if (target.type === 'node') {
@@ -491,9 +549,17 @@ function clearOverlayCanvas() {
 function drawOverlayTables(anchorPoint, data) {
   const tables = Array.isArray(data?.tables) ? data.tables.filter(Boolean) : [];
   const titleLines = Array.isArray(data?.titleLines) ? data.titleLines : [];
-  const layoutInfo = { box: null, tables: [] };
+  const layoutInfo = {
+    box: null,
+    tables: [],
+    scrollable: false,
+    scrollOffset: 0,
+    maxScroll: 0,
+    contentHeight: 0,
+  };
   if (!tables.length && !titleLines.length) {
     overlayState.layout = null;
+    overlayState.scrollOffset = 0;
     return;
   }
 
@@ -519,6 +585,20 @@ function drawOverlayTables(anchorPoint, data) {
   const containerWidth = Number.isFinite(containerWidthRaw) ? containerWidthRaw : 0;
   const maxContainerWidth = Math.max(viewportWidth, canvasWidth, containerWidth);
   const maxAllowedWidth = Math.max(OVERLAY_PADDING * 2 + 160, maxContainerWidth - OVERLAY_MARGIN * 2);
+
+  const viewportHeightRaw = typeof window !== 'undefined' ? window.innerHeight : overlayCanvas.height;
+  const viewportHeight = Number.isFinite(viewportHeightRaw) ? viewportHeightRaw : 0;
+  const canvasHeightRaw = overlayCanvas?.height;
+  const canvasHeight = Number.isFinite(canvasHeightRaw) ? canvasHeightRaw : viewportHeight;
+  const containerHeightRaw = canvasContainer?.clientHeight;
+  const containerHeight = Number.isFinite(containerHeightRaw) ? containerHeightRaw : 0;
+  const maxContainerHeight = Math.max(viewportHeight, canvasHeight, containerHeight);
+  const minAllowedHeight = OVERLAY_PADDING * 2 + rowHeight * 3;
+  const maxAllowedHeight = Math.max(minAllowedHeight, maxContainerHeight - OVERLAY_MARGIN * 2);
+  const canvasLimitHeight = overlayCanvas?.height
+    ? Math.max(minAllowedHeight, overlayCanvas.height - OVERLAY_MARGIN * 2)
+    : maxAllowedHeight;
+  const effectiveMaxHeight = Math.max(minAllowedHeight, Math.min(maxAllowedHeight, canvasLimitHeight));
 
   let maxTitleWidth = 0;
   titleLines.forEach(line => {
@@ -588,7 +668,8 @@ function drawOverlayTables(anchorPoint, data) {
       const scale = Math.max(0.3, innerWidth / Math.max(info.rawWidth, 1));
       info.columnWidths = info.columnWidths.map(width => width * scale);
       info.spacing = info.spacing * scale;
-      info.rawWidth = info.columnWidths.reduce((sum, width) => sum + width, 0) + info.spacing * Math.max(0, info.columnCount - 1);
+      info.rawWidth =
+        info.columnWidths.reduce((sum, width) => sum + width, 0) + info.spacing * Math.max(0, info.columnCount - 1);
     }
   });
 
@@ -612,22 +693,40 @@ function drawOverlayTables(anchorPoint, data) {
   const bottomPadding = processedTables.length ? Math.max(rowHeight * 0.6, 10) : 0;
   totalTablesHeight += bottomPadding + rowHeight;
 
-  const boxHeight = paddingY * 2 + titleHeight + titleGap + totalTablesHeight;
+  const contentHeight = paddingY * 2 + titleHeight + titleGap + totalTablesHeight;
+  let boxHeight = Math.min(contentHeight, effectiveMaxHeight);
+  if (!Number.isFinite(boxHeight) || boxHeight <= 0) {
+    boxHeight = Math.max(minAllowedHeight, rowHeight * 4);
+  }
 
   let boxX = anchorPoint.x + OVERLAY_MARGIN;
   let boxY = anchorPoint.y - boxHeight - OVERLAY_MARGIN;
-  if (boxX + boxWidth > overlayCanvas.width - OVERLAY_MARGIN) {
-    boxX = overlayCanvas.width - OVERLAY_MARGIN - boxWidth;
+  const maxX = overlayCanvas.width - OVERLAY_MARGIN;
+  if (boxX + boxWidth > maxX) {
+    boxX = maxX - boxWidth;
   }
   if (boxX < OVERLAY_MARGIN) {
     boxX = OVERLAY_MARGIN;
   }
+  const maxY = overlayCanvas.height - OVERLAY_MARGIN;
   if (boxY < OVERLAY_MARGIN) {
     boxY = anchorPoint.y + OVERLAY_MARGIN;
-    if (boxY + boxHeight > overlayCanvas.height - OVERLAY_MARGIN) {
-      boxY = overlayCanvas.height - OVERLAY_MARGIN - boxHeight;
+    if (boxY + boxHeight > maxY) {
+      boxY = maxY - boxHeight;
     }
   }
+  if (boxY < OVERLAY_MARGIN) {
+    boxY = OVERLAY_MARGIN;
+  }
+  if (boxY + boxHeight > maxY) {
+    boxY = Math.max(OVERLAY_MARGIN, maxY - boxHeight);
+  }
+
+  const scrollable = contentHeight > boxHeight + 0.5;
+  const maxScroll = Math.max(0, contentHeight - boxHeight);
+  const rawScrollOffset = Number.isFinite(overlayState.scrollOffset) ? overlayState.scrollOffset : 0;
+  const scrollOffset = scrollable ? Math.min(maxScroll, Math.max(0, rawScrollOffset)) : 0;
+  overlayState.scrollOffset = scrollOffset;
 
   layoutInfo.box = {
     x: boxX,
@@ -635,6 +734,12 @@ function drawOverlayTables(anchorPoint, data) {
     width: boxWidth,
     height: boxHeight,
   };
+  layoutInfo.scrollable = scrollable;
+  layoutInfo.scrollOffset = scrollOffset;
+  layoutInfo.maxScroll = maxScroll;
+  layoutInfo.contentHeight = contentHeight;
+  layoutInfo.boxHeight = boxHeight;
+  layoutInfo.rowHeight = rowHeight;
 
   const radius = 10;
   overlayCtx.fillStyle = 'rgba(13, 17, 23, 0.95)';
@@ -654,7 +759,12 @@ function drawOverlayTables(anchorPoint, data) {
   overlayCtx.fill();
   overlayCtx.stroke();
 
-  let cursorY = boxY + paddingY + (titleLines.length ? rowHeight / 2 : 0);
+  overlayCtx.save();
+  overlayCtx.beginPath();
+  overlayCtx.rect(boxX, boxY, boxWidth, boxHeight);
+  overlayCtx.clip();
+
+  let cursorY = boxY + paddingY + (titleLines.length ? rowHeight / 2 : 0) - scrollOffset;
   overlayCtx.fillStyle = '#e6edf3';
   titleLines.forEach(line => {
     overlayCtx.fillText(line, boxX + paddingX, cursorY);
@@ -756,6 +866,24 @@ function drawOverlayTables(anchorPoint, data) {
 
   cursorY += bottomPadding;
 
+  overlayCtx.restore();
+
+  if (scrollable) {
+    const trackWidth = 4;
+    const trackX = boxX + boxWidth - trackWidth - 4;
+    const trackY = boxY + 6;
+    const trackHeight = Math.max(12, boxHeight - 12);
+    const progress = maxScroll > 0 ? scrollOffset / maxScroll : 0;
+    const thumbHeight = Math.max(18, trackHeight * (boxHeight / contentHeight));
+    const thumbTravel = Math.max(0, trackHeight - thumbHeight);
+    const thumbY = trackY + progress * thumbTravel;
+
+    overlayCtx.fillStyle = 'rgba(88, 166, 255, 0.18)';
+    overlayCtx.fillRect(trackX, trackY, trackWidth, trackHeight);
+    overlayCtx.fillStyle = 'rgba(88, 166, 255, 0.65)';
+    overlayCtx.fillRect(trackX, thumbY, trackWidth, thumbHeight);
+  }
+
   overlayState.layout = layoutInfo;
   overlayCtx.restore();
 }
@@ -764,6 +892,8 @@ function hideOverlay() {
     clearOverlayCanvas();
     return;
   }
+  const echoWasActive = topicEchoState.active;
+  stopTopicEcho({ notify: echoWasActive });
   overlayState.visible = false;
   overlayState.nodeName = '';
   overlayState.description = '';
@@ -772,6 +902,7 @@ function hideOverlay() {
   overlayState.table = null;
   overlayState.layout = null;
   overlayState.hoverRow = null;
+  overlayState.scrollOffset = 0;
   if (overlayCanvas) {
     overlayCanvas.style.cursor = 'default';
   }
@@ -2058,6 +2189,7 @@ async function handleContextMenuAction(action, target) {
   if (!target) {
     return;
   }
+  stopTopicEcho();
 
   if (target.type === 'topic-edge' || target.type === 'topic-node') {
     const topicGeometry = currentScene.nodes?.get(target.topicName);
@@ -2073,35 +2205,40 @@ async function handleContextMenuAction(action, target) {
       return;
     }
 
-    if (action !== 'stats') {
-      statusEl.textContent = `Unsupported topic action: ${action}`;
+    if (action === 'stats') {
+      const peerInfo = target.peerName ? ` ↔ ${target.peerName}` : '';
+      const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+      const measuringText =
+        `Topic: ${target.topicName}\n` +
+        (target.peerName ? `Peer: ${target.peerName}\n` : '') +
+        'Collecting stats…';
+      showOverlayWithDescription(target.topicName, measuringText, false);
+      statusEl.textContent = `Collecting ${action} for ${target.topicName}${peerInfo}…`;
+      try {
+        const payload = await requestTopicTool(action, target.topicName, target.peerName);
+        showTopicMeasurementOverlay(action, target, payload);
+      } catch (err) {
+        let message;
+        if (err?.name === 'AbortError') {
+          message = 'request timed out';
+        } else {
+          message = err?.message || String(err);
+        }
+        statusEl.textContent = `Failed to collect ${action} for ${target.topicName}: ${message}`;
+        showOverlayWithDescription(
+          target.topicName,
+          `Topic: ${target.topicName}\n${actionLabel} measurement failed.\n${message}`,
+        );
+      }
       return;
     }
 
-    const peerInfo = target.peerName ? ` ↔ ${target.peerName}` : '';
-    const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
-    const measuringText =
-      `Topic: ${target.topicName}\n` +
-      (target.peerName ? `Peer: ${target.peerName}\n` : '') +
-      'Collecting stats…';
-    showOverlayWithDescription(target.topicName, measuringText, false);
-    statusEl.textContent = `Collecting ${action} for ${target.topicName}${peerInfo}…`;
-    try {
-      const payload = await requestTopicTool(action, target.topicName, target.peerName);
-      showTopicMeasurementOverlay(action, target, payload);
-    } catch (err) {
-      let message;
-      if (err?.name === 'AbortError') {
-        message = 'request timed out';
-      } else {
-        message = err?.message || String(err);
-      }
-      statusEl.textContent = `Failed to collect ${action} for ${target.topicName}: ${message}`;
-      showOverlayWithDescription(
-        target.topicName,
-        `Topic: ${target.topicName}\n${actionLabel} measurement failed.\n${message}`,
-      );
+    if (action === 'echo') {
+      await startTopicEcho(target.topicName, target.peerName);
+      return;
     }
+
+    statusEl.textContent = `Unsupported topic action: ${action}`;
     return;
   }
 
@@ -2270,12 +2407,20 @@ function validateContextMenuTarget() {
   }
 }
 
-async function requestTopicTool(action, topicName, peerName) {
+async function requestTopicTool(action, topicName, peerName, options = {}) {
   const params = new URLSearchParams();
   params.set('action', action);
   params.set('topic', topicName);
   if (peerName) {
     params.set('peer', peerName);
+  }
+  const extraParams = options?.params;
+  if (extraParams && typeof extraParams === 'object') {
+    Object.entries(extraParams).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        params.set(key, String(value));
+      }
+    });
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TOPIC_TOOL_TIMEOUT);
@@ -2300,6 +2445,17 @@ async function requestTopicTool(action, topicName, peerName) {
     throw new Error(message);
   }
   return payload;
+}
+
+async function requestTopicEcho(topicName, mode, streamId, peerName) {
+  const params = {};
+  if (mode) {
+    params.mode = mode;
+  }
+  if (streamId) {
+    params.stream = streamId;
+  }
+  return requestTopicTool('echo', topicName, peerName, { params });
 }
 
 async function requestNodeTool(action, nodeName, options = {}) {
@@ -2882,12 +3038,275 @@ function resolveOverlayDescription(nodeName, geometry) {
   return description;
 }
 
+function stringifyEchoValue(value, limit = 160) {
+  let text;
+  if (value === null || value === undefined) {
+    text = String(value);
+  } else if (typeof value === 'string') {
+    text = value;
+  } else if (typeof value === 'number' || typeof value === 'boolean') {
+    text = String(value);
+  } else if (Array.isArray(value) || typeof value === 'object') {
+    try {
+      text = JSON.stringify(value);
+    } catch (err) {
+      text = String(value);
+    }
+  } else {
+    text = String(value);
+  }
+  if (text.length > limit) {
+    return `${text.slice(0, Math.max(0, limit - 1))}…`;
+  }
+  return text;
+}
+
+function buildTopicEchoHeaderRows(header) {
+  if (!header || typeof header !== 'object') {
+    return [];
+  }
+  const rows = [];
+  const walk = (value, path) => {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const entries = Object.entries(value);
+      if (!entries.length) {
+        rows.push([path, '{}']);
+        return;
+      }
+      entries.forEach(([key, child]) => {
+        walk(child, path ? `${path}.${key}` : key);
+      });
+      return;
+    }
+    if (Array.isArray(value)) {
+      rows.push([path, stringifyEchoValue(value)]);
+      return;
+    }
+    rows.push([path, stringifyEchoValue(value)]);
+  };
+  Object.entries(header).forEach(([key, value]) => {
+    walk(value, key);
+  });
+  return rows;
+}
+
+function buildTopicEchoDataRows(entries) {
+  if (!Array.isArray(entries) || !entries.length) {
+    return [];
+  }
+  const rows = [];
+  entries.forEach(entry => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const depthRaw = entry.depth;
+    const depth = Number.isFinite(depthRaw) ? Math.max(0, depthRaw) : 0;
+    const label = typeof entry.label === 'string' ? entry.label : '';
+    const value = entry.value;
+    const indent = depth > 0 ? '    '.repeat(depth) : '';
+    const displayLabel = indent + label;
+    let displayValue = '';
+    if (typeof value === 'string') {
+      displayValue = value;
+    } else if (value !== null && value !== undefined) {
+      displayValue = stringifyEchoValue(value);
+    }
+    rows.push([displayLabel, displayValue]);
+  });
+  return rows;
+}
+
+function stopTopicEcho(options = {}) {
+  const { sendStop = true, notify = false } = options;
+  if (topicEchoState.timer) {
+    clearTimeout(topicEchoState.timer);
+    topicEchoState.timer = null;
+  }
+  if (!topicEchoState.active) {
+    return;
+  }
+  const topicName = topicEchoState.topicName;
+  const streamId = topicEchoState.streamId;
+  const peerName = topicEchoState.peerName;
+  topicEchoState.active = false;
+  topicEchoState.topicName = '';
+  topicEchoState.peerName = '';
+  topicEchoState.streamId = '';
+  if (sendStop && streamId) {
+    void requestTopicEcho(topicName, 'stop', streamId, peerName).catch(() => undefined);
+  }
+  if (notify && topicName) {
+    statusEl.textContent = `Echo stopped for ${topicName}`;
+  }
+}
+
+function renderTopicEchoOverlay(topicName, payload) {
+  const data = payload || {};
+  const titleLines = [`Topic: ${topicName}`];
+  const typeLabel = data.type ? String(data.type) : '';
+  if (typeLabel) {
+    titleLines.push(`Type: ${typeLabel}`);
+  }
+  const infoParts = [];
+  if (typeof data.count === 'number') {
+    infoParts.push(`Messages: ${data.count}`);
+  }
+  const sample = data.sample;
+  if (sample?.received_iso) {
+    infoParts.push(`Last: ${sample.received_iso}`);
+  }
+  if (infoParts.length) {
+    titleLines.push(infoParts.join(' • '));
+  }
+  if (!sample) {
+    const lines = [...titleLines, 'Waiting for messages…'];
+    showOverlayWithDescription(topicName, lines.join('\n'), false, 0, { preserveEcho: true });
+    return;
+  }
+
+  const tables = [];
+  const headerRows = buildTopicEchoHeaderRows(sample.header);
+  if (headerRows.length) {
+    tables.push({
+      title: 'Header',
+      headers: ['Field', 'Value'],
+      rows: headerRows,
+    });
+  }
+  const structuredDataRows = buildTopicEchoDataRows(sample.data_rows);
+  if (structuredDataRows.length) {
+    tables.push({
+      title: 'Data',
+      headers: ['Field', 'Value'],
+      rows: structuredDataRows,
+    });
+  } else {
+    const dataText = typeof sample.data_text === 'string' && sample.data_text.length
+      ? sample.data_text
+      : stringifyEchoValue(sample.data);
+    if (dataText) {
+      tables.push({
+        title: 'Data',
+        headers: ['Value'],
+        rows: [[dataText]],
+      });
+    }
+  }
+  if (!tables.length) {
+    tables.push({
+      title: 'Data',
+      headers: ['Value'],
+      rows: [['(no data available)']],
+    });
+  }
+
+  showOverlayWithTables(
+    topicName,
+    {
+      titleLines,
+      tables,
+      context: {
+        echoStream: true,
+      },
+    },
+    { preserveEcho: true, preserveScroll: true },
+  );
+}
+
+function scheduleTopicEchoPoll() {
+  if (!topicEchoState.active || !topicEchoState.streamId) {
+    return;
+  }
+  if (topicEchoState.timer) {
+    clearTimeout(topicEchoState.timer);
+  }
+  topicEchoState.timer = window.setTimeout(() => {
+    void pollTopicEcho();
+  }, TOPIC_ECHO_REFRESH_MS);
+}
+
+async function pollTopicEcho() {
+  if (!topicEchoState.active || !topicEchoState.streamId) {
+    return;
+  }
+  topicEchoState.timer = null;
+  try {
+    const payload = await requestTopicEcho(
+      topicEchoState.topicName,
+      'poll',
+      topicEchoState.streamId,
+      topicEchoState.peerName,
+    );
+    handleTopicEchoPayload(payload);
+  } catch (err) {
+    const message = err?.message || String(err);
+    statusEl.textContent = `Echo stopped for ${topicEchoState.topicName}: ${message}`;
+    stopTopicEcho({ sendStop: false });
+  }
+}
+
+function handleTopicEchoPayload(payload) {
+  if (!topicEchoState.active || !payload || payload.topic !== topicEchoState.topicName) {
+    return;
+  }
+  if (payload.stopped) {
+    stopTopicEcho({ sendStop: false, notify: true });
+    return;
+  }
+  if (payload.stream_id) {
+    topicEchoState.streamId = payload.stream_id;
+  }
+  renderTopicEchoOverlay(topicEchoState.topicName, payload);
+  const hasSample = payload?.sample && payload.sample.data !== undefined;
+  if (hasSample) {
+    statusEl.textContent = `Echoing ${topicEchoState.topicName} (${payload.count ?? 0} messages)`;
+  } else {
+    statusEl.textContent = `Listening on ${topicEchoState.topicName}…`;
+  }
+  scheduleTopicEchoPoll();
+}
+
+async function startTopicEcho(topicName, peerName) {
+  stopTopicEcho();
+  topicEchoState.active = true;
+  topicEchoState.topicName = topicName;
+  topicEchoState.peerName = peerName || '';
+  topicEchoState.streamId = '';
+  topicEchoState.timer = null;
+  statusEl.textContent = `Starting echo for ${topicName}…`;
+  renderTopicEchoOverlay(topicName, { topic: topicName, type: '', count: 0, sample: null });
+  try {
+    const payload = await requestTopicEcho(topicName, 'start', '', peerName);
+    if (!topicEchoState.active || topicEchoState.topicName !== topicName) {
+      return;
+    }
+    handleTopicEchoPayload(payload);
+  } catch (err) {
+    const message = err?.message || String(err);
+    statusEl.textContent = `Failed to start echo for ${topicName}: ${message}`;
+    stopTopicEcho({ sendStop: false });
+    hideOverlay();
+  }
+}
+
 function showOverlayForNode(nodeName, geometry) {
   const description = resolveOverlayDescription(nodeName, geometry);
   showOverlayWithDescription(nodeName, description, true);
 }
 
-function showOverlayWithDescription(nodeName, description, auto = false, maxWidth = 0) {
+function showOverlayWithDescription(nodeName, description, auto = false, maxWidth = 0, options) {
+  let opts = options;
+  if (typeof auto === 'object' && options === undefined) {
+    opts = auto;
+    auto = false;
+    maxWidth = 0;
+  } else if (typeof maxWidth === 'object' && options === undefined) {
+    opts = maxWidth;
+    maxWidth = 0;
+  }
+  if (!opts?.preserveEcho) {
+    stopTopicEcho();
+  }
   overlayState.visible = true;
   overlayState.nodeName = nodeName;
   overlayState.description = description;
@@ -2896,11 +3315,19 @@ function showOverlayWithDescription(nodeName, description, auto = false, maxWidt
   overlayState.table = null;
   overlayState.layout = null;
   overlayState.hoverRow = null;
+  overlayState.scrollOffset = 0;
   setOverlayPointerCapture(true);
   refreshOverlay();
 }
 
-function showOverlayWithTables(nodeName, tableData) {
+function showOverlayWithTables(nodeName, tableData, options = {}) {
+  if (!options?.preserveEcho) {
+    stopTopicEcho();
+  }
+  const shouldResetScroll =
+    !overlayState.visible ||
+    overlayState.nodeName !== nodeName ||
+    !options?.preserveScroll;
   overlayState.visible = true;
   overlayState.nodeName = nodeName;
   overlayState.description = '';
@@ -2909,6 +3336,9 @@ function showOverlayWithTables(nodeName, tableData) {
   overlayState.table = tableData;
   overlayState.layout = null;
   overlayState.hoverRow = null;
+  if (shouldResetScroll) {
+    overlayState.scrollOffset = 0;
+  }
   setOverlayPointerCapture(true);
   refreshOverlay();
 }

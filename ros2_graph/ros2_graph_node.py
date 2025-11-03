@@ -29,6 +29,11 @@ except ImportError:  # pragma: no cover - allows docs/tests without ROS deps
     SetParameters = None  # type: ignore[assignment]
 
 try:
+    from rosidl_runtime_py.convert import message_to_ordereddict  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency for echo support
+    message_to_ordereddict = None  # type: ignore[assignment]
+
+try:
     from rosidl_parser.definition import (  # type: ignore[attr-defined]
         AbstractSequence,
         Array,
@@ -67,6 +72,8 @@ HIDE_TF_NODES = False
 INTERNAL_NODE_NAMES = {
     '/ros2_graph_metrics_probe',
     'ros2_graph_metrics_probe',
+    '/ros2_graph',
+    'ros2_graph',
     '/ros2cli_daemon',
     'ros2cli_daemon',
 }
@@ -479,6 +486,109 @@ def _truncate_parameter_display(value: str, limit: int = PARAMETER_DISPLAY_MAX) 
     return text[: limit - 3] + '...'
 
 
+def _stringify_echo_value(value: object, limit: int = 256) -> str:
+    if isinstance(value, (bytes, bytearray)):
+        text = '0x' + bytes(value).hex()
+    elif isinstance(value, str):
+        text = value
+    elif isinstance(value, (int, float, bool)) or value is None:
+        text = str(value)
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            text = str(value)
+    if len(text) > limit:
+        return text[: max(0, limit - 1)] + '…'
+    return text
+
+
+def _build_echo_data_rows(value: object, limit: int = 256) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+
+    def walk(current: object, label: Optional[str], depth: int) -> None:
+        if isinstance(current, dict):
+            entries = list(current.items())
+            if label is not None:
+                rows.append({
+                    'depth': depth,
+                    'label': str(label),
+                    'value': '' if entries else '(empty)',
+                })
+                next_depth = depth + 1
+            else:
+                next_depth = depth
+            if entries:
+                for key, child in entries:
+                    walk(child, key, next_depth)
+            elif label is None:
+                rows.append({
+                    'depth': depth,
+                    'label': '',
+                    'value': '(empty)',
+                })
+            return
+
+        if isinstance(current, (list, tuple)):
+            items = list(current)
+            if label is not None:
+                rows.append({
+                    'depth': depth,
+                    'label': str(label),
+                    'value': '' if items else '(empty)',
+                })
+                next_depth = depth + 1
+            else:
+                next_depth = depth
+            if items:
+                for index, item in enumerate(items):
+                    walk(item, f'[{index}]', next_depth)
+            elif label is None:
+                rows.append({
+                    'depth': depth,
+                    'label': '',
+                    'value': '(empty)',
+                })
+            return
+
+        text = _stringify_echo_value(current, limit=limit)
+        rows.append({
+            'depth': depth,
+            'label': '' if label is None else str(label),
+            'value': text,
+        })
+
+    walk(value, None, 0)
+    return rows
+
+
+def _convert_message_to_primitive(msg: object) -> object:
+    if msg is None:
+        return None
+    if message_to_ordereddict is not None:
+        try:
+            return message_to_ordereddict(msg)
+        except Exception:  # pragma: no cover - defensive
+            pass
+    if isinstance(msg, (str, int, float, bool)):
+        return msg
+    if isinstance(msg, (bytes, bytearray)):
+        return list(msg)
+    if isinstance(msg, (list, tuple)):
+        return [_convert_message_to_primitive(item) for item in msg]
+    if hasattr(msg, '__slots__'):
+        result: Dict[str, object] = {}
+        for slot_name in getattr(type(msg), '__slots__', []):
+            attr = slot_name.lstrip('_')
+            try:
+                value = getattr(msg, attr)
+            except AttributeError:
+                continue
+            result[attr] = _convert_message_to_primitive(value)
+        return result
+    return str(msg)
+
+
 def _parameter_descriptor_to_dict(descriptor) -> Optional[Dict[str, object]]:
     if descriptor is None:
         return None
@@ -521,6 +631,101 @@ def _parameter_descriptor_to_dict(descriptor) -> Optional[Dict[str, object]]:
 
     return data
 
+
+class _TopicEchoAggregator:
+    def __init__(self, node: Node, topic: str, msg_type, type_name: str) -> None:
+        self._node = node
+        self.topic = topic
+        self.type_name = type_name
+        self._lock = threading.Lock()
+        self._watchers: Dict[str, float] = {}
+        self._count = 0
+        self._last_received = 0.0
+        self._last_sample: Optional[Dict[str, object]] = None
+        qos_profile = QoSProfile(depth=10)
+        qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
+        qos_profile.durability = DurabilityPolicy.VOLATILE
+        self._subscription = node.create_subscription(msg_type, topic, self._callback, qos_profile)
+
+    def _callback(self, msg) -> None:
+        primitive = _convert_message_to_primitive(msg)
+        header = None
+        data_field = None
+        if isinstance(primitive, dict):
+            header = primitive.get('header')
+            if 'data' in primitive:
+                data_field = primitive.get('data')
+            else:
+                remaining = {k: v for k, v in primitive.items() if k != 'header'}
+                if len(remaining) == 1:
+                    data_field = next(iter(remaining.values()))
+                else:
+                    data_field = remaining or primitive
+        else:
+            data_field = primitive
+
+        timestamp = time.time()
+        sample = {
+            'header': header,
+            'data': data_field,
+            'data_text': _stringify_echo_value(data_field),
+            'received_at': timestamp,
+        }
+        sample['data_rows'] = _build_echo_data_rows(data_field)
+        with self._lock:
+            self._count += 1
+            self._last_received = timestamp
+            self._last_sample = sample
+
+    def register(self, token: str) -> None:
+        with self._lock:
+            self._watchers[token] = time.time()
+
+    def unregister(self, token: str) -> None:
+        with self._lock:
+            self._watchers.pop(token, None)
+
+    def touch(self, token: str, timestamp: Optional[float] = None) -> None:
+        with self._lock:
+            if token in self._watchers:
+                self._watchers[token] = timestamp or time.time()
+
+    def prune_watchers(self, cutoff: float) -> List[str]:
+        removed: List[str] = []
+        with self._lock:
+            stale = [token for token, ts in self._watchers.items() if ts < cutoff]
+            for token in stale:
+                self._watchers.pop(token, None)
+                removed.append(token)
+        return removed
+
+    def has_watchers(self) -> bool:
+        with self._lock:
+            return bool(self._watchers)
+
+    def snapshot(self) -> Dict[str, object]:
+        with self._lock:
+            sample = None if self._last_sample is None else dict(self._last_sample)
+            count = self._count
+            last_received = self._last_received
+        if sample is not None:
+            received_at = sample.get('received_at')
+            if isinstance(received_at, (int, float)) and received_at > 0:
+                sample['received_iso'] = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(received_at))
+        return {
+            'type': self.type_name,
+            'count': count,
+            'last_received': last_received,
+            'sample': sample,
+        }
+
+    def destroy(self) -> None:
+        try:
+            self._node.destroy_subscription(self._subscription)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        with self._lock:
+            self._watchers.clear()
 
 def _rosidl_slot_type_to_string(slot_type) -> str:
     if Array is not None and isinstance(slot_type, Array):
@@ -868,6 +1073,11 @@ class Ros2GraphNode(Node):
         self._metrics_lock = threading.Lock()
         self._metrics_cache: Dict[Tuple[str, Tuple[str, ...]], Dict[str, object]] = {}
         self._metrics_cache_ttl = 5.0
+        self._echo_lock = threading.Lock()
+        self._echo_aggregators: Dict[str, _TopicEchoAggregator] = {}
+        self._echo_streams: Dict[str, Dict[str, object]] = {}
+        self._echo_next_stream_id = 1
+        self._echo_timeout = 30.0
         self._web_server: Optional[GraphWebServer] = None
         self._last_snapshot: Optional[GraphSnapshot] = None
         if bool(self.get_parameter('web_enable').value):
@@ -1094,6 +1304,151 @@ class Ros2GraphNode(Node):
             },
         }
 
+    def _ensure_echo_aggregator_locked(self, topic: str) -> _TopicEchoAggregator:
+        aggregator = self._echo_aggregators.get(topic)
+        if aggregator is not None:
+            return aggregator
+        snapshot = self._last_snapshot
+        if snapshot is None:
+            raise RuntimeError('graph not ready yet')
+        type_names = snapshot.topics.get(topic)
+        if not type_names:
+            raise ValueError(f"topic '{topic}' not found")
+        type_name = type_names[0]
+        try:
+            from rosidl_runtime_py.utilities import get_message  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError('rosidl_runtime_py is required for topic echo support') from exc
+        try:
+            msg_type = get_message(type_name)
+        except (AttributeError, ModuleNotFoundError, ValueError) as exc:
+            raise RuntimeError(f"failed to import message type '{type_name}'") from exc
+        aggregator = _TopicEchoAggregator(self, topic, msg_type, type_name)
+        self._echo_aggregators[topic] = aggregator
+        return aggregator
+
+    def _create_echo_stream_locked(self, topic: str, aggregator: _TopicEchoAggregator) -> str:
+        stream_id = ''
+        while True:
+            candidate = f'echo-{int(time.time() * 1000):x}-{self._echo_next_stream_id}'
+            self._echo_next_stream_id += 1
+            if candidate not in self._echo_streams:
+                stream_id = candidate
+                break
+        aggregator.register(stream_id)
+        self._echo_streams[stream_id] = {
+            'topic': topic,
+            'aggregator': aggregator,
+            'last_access': time.time(),
+        }
+        return stream_id
+
+    def _stop_topic_echo_stream_locked(self, stream_id: str) -> bool:
+        info = self._echo_streams.pop(stream_id, None)
+        if not info:
+            return False
+        aggregator: _TopicEchoAggregator = info['aggregator']
+        aggregator.unregister(stream_id)
+        if not aggregator.has_watchers():
+            aggregator.destroy()
+            self._echo_aggregators.pop(info['topic'], None)
+        return True
+
+    def _cleanup_echo_locked(self) -> None:
+        if not self._echo_streams and not self._echo_aggregators:
+            return
+        now = time.time()
+        cutoff = now - self._echo_timeout
+        stale_streams: List[str] = []
+        for stream_id, info in list(self._echo_streams.items()):
+            if info.get('last_access', 0.0) < cutoff:
+                aggregator: _TopicEchoAggregator = info['aggregator']
+                aggregator.unregister(stream_id)
+                stale_streams.append(stream_id)
+        for stream_id in stale_streams:
+            info = self._echo_streams.pop(stream_id, None)
+            if not info:
+                continue
+            aggregator: _TopicEchoAggregator = info['aggregator']
+            if not aggregator.has_watchers():
+                aggregator.destroy()
+                self._echo_aggregators.pop(info['topic'], None)
+        for topic, aggregator in list(self._echo_aggregators.items()):
+            removed = aggregator.prune_watchers(cutoff)
+            for token in removed:
+                self._echo_streams.pop(token, None)
+            if not aggregator.has_watchers():
+                aggregator.destroy()
+                self._echo_aggregators.pop(topic, None)
+
+    def _handle_topic_echo_request(
+        self,
+        topic: str,
+        peer: Optional[str],
+        params: Dict[str, list],
+    ) -> Tuple[int, Dict[str, object]]:
+        raw_mode = params.get('mode', [''])[0].strip().lower()
+        stream_id = params.get('stream', [''])[0].strip()
+        mode = raw_mode or ('start' if not stream_id else 'poll')
+
+        aggregator: Optional[_TopicEchoAggregator] = None
+        with self._echo_lock:
+            self._cleanup_echo_locked()
+            if mode == 'stop':
+                if not stream_id:
+                    return 400, {'error': 'missing stream identifier'}
+                if not self._stop_topic_echo_stream_locked(stream_id):
+                    return 404, {'error': 'unknown echo stream'}
+                return 200, {
+                    'action': 'echo',
+                    'topic': topic,
+                    'stream_id': stream_id,
+                    'stopped': True,
+                }
+
+            if mode == 'start':
+                try:
+                    aggregator = self._ensure_echo_aggregator_locked(topic)
+                except ValueError as exc:
+                    return 404, {'error': str(exc)}
+                except RuntimeError as exc:
+                    return 503, {'error': str(exc)}
+                except Exception as exc:  # pragma: no cover - defensive
+                    return 500, {'error': str(exc)}
+                stream_id = self._create_echo_stream_locked(topic, aggregator)
+            else:
+                if not stream_id:
+                    return 400, {'error': 'missing stream identifier'}
+                info = self._echo_streams.get(stream_id)
+                if not info or info['topic'] != topic:
+                    return 404, {'error': 'unknown echo stream'}
+                aggregator = info['aggregator']
+                now = time.time()
+                info['last_access'] = now
+                aggregator.touch(stream_id, now)
+
+        if aggregator is None:  # pragma: no cover - defensive
+            return 500, {'error': 'failed to initialise echo stream'}
+
+        snapshot = aggregator.snapshot()
+        sample = snapshot.get('sample')
+        payload: Dict[str, object] = {
+            'action': 'echo',
+            'topic': topic,
+            'stream_id': stream_id,
+            'type': snapshot.get('type'),
+            'count': snapshot.get('count', 0),
+            'sample': sample,
+            'timeout': self._echo_timeout,
+        }
+        if peer:
+            payload['peer'] = peer
+        if mode == 'start':
+            payload['started'] = True
+        if sample is None:
+            payload['status'] = 'waiting'
+        return 200, payload
+
     def _call_service_for_node(
         self,
         base: str,
@@ -1188,8 +1543,17 @@ class Ros2GraphNode(Node):
         reason = str(getattr(result, 'reason', '') or '')
         return success, reason
 
-    def _handle_topic_tool_request(self, action: str, topic: str, peer: Optional[str]) -> Tuple[int, Dict[str, object]]:
+    def _handle_topic_tool_request(
+        self,
+        action: str,
+        topic: str,
+        peer: Optional[str],
+        params: Optional[Dict[str, list]] = None,
+    ) -> Tuple[int, Dict[str, object]]:
         action = (action or '').lower()
+        params_map = params or {}
+        if action == 'echo':
+            return self._handle_topic_echo_request(topic, peer, params_map)
         if action not in {'info', 'stats'}:
             return 400, {'error': f"unsupported action '{action}'"}
 
@@ -1655,6 +2019,11 @@ class Ros2GraphNode(Node):
             self.get_logger().exception('Failed to push graph update to web clients')
 
     def destroy_node(self) -> bool:
+        with self._echo_lock:
+            for aggregator in self._echo_aggregators.values():
+                aggregator.destroy()
+            self._echo_aggregators.clear()
+            self._echo_streams.clear()
         if self._web_server:
             self._web_server.stop()
         return super().destroy_node()
