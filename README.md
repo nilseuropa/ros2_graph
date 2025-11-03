@@ -57,6 +57,7 @@ ros2 run ros2_graph ros2_graph \
 The client lives entirely in `ros2_graph/web/static`. Point your browser at the node and
 you’ll see a two-layer canvas (graph + overlay) and a status bar describing the latest
 interaction.
+![Canvas](doc/graph_canvas.png)
 
 ### Canvas Basics
 
@@ -71,14 +72,16 @@ interaction.
 
 ### Node & Topic Overlays
 
-- **Info (nodes/topics)** – Shows namespaces, endpoint counts, and recent metadata in a
+**Info (nodes/topics)** – Shows namespaces, endpoint counts, and recent metadata in a
   floating card. The overlay tracks the node even if you pan the view.
-- **Topic Stats** – The UI requests a short-lived probe that subscribes for ~2.5 seconds
+![Node info](doc/node_info.png)
+
+**Topic Stats** – The UI requests a short-lived probe that subscribes for ~2.5 seconds
   and returns message frequency and bandwidth estimates. Results are cached on the server
   side to avoid redundant sampling.
+![Topic stats](doc/topic_stats.png)
 
 ### Parameter Editor
-
 1. Right-click a node → **Parameters**.
 2. A table lists every declared parameter (name, value, type).
 3. **Single-click** any value to open the parameter editor.
@@ -89,8 +92,11 @@ interaction.
 4. Submit to call `set_parameter`. Success triggers an immediate refresh so you can see
    the new value reflected in the table.
 
-### Service Caller
+![Parameter list](doc/node_params.png)
 
+![Parameter editor](doc/set_param.png)
+
+### Service Caller
 1. Right-click a node → **Services**.
 2. Click a service row to open the service caller modal.
    - The backend introspects the service type (`rosidl_parser` + `rosidl_runtime_py`)
@@ -100,6 +106,10 @@ interaction.
    - The modal shows an example request (when available) and caches the most recent
      response for reference.
 3. Hit **Call** to invoke the service. The response is rendered as pretty-printed JSON.
+
+![Service list](doc/node_services.png)
+
+![Service call](doc/service_call.png)
 
 ### Status & keyboard shortcuts
 
