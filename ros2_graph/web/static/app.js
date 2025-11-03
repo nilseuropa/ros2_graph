@@ -595,6 +595,10 @@ function drawOverlayTables(anchorPoint, data) {
   const maxContainerHeight = Math.max(viewportHeight, canvasHeight, containerHeight);
   const minAllowedHeight = OVERLAY_PADDING * 2 + rowHeight * 3;
   const maxAllowedHeight = Math.max(minAllowedHeight, maxContainerHeight - OVERLAY_MARGIN * 2);
+  const canvasLimitHeight = overlayCanvas?.height
+    ? Math.max(minAllowedHeight, overlayCanvas.height - OVERLAY_MARGIN * 2)
+    : maxAllowedHeight;
+  const effectiveMaxHeight = Math.max(minAllowedHeight, Math.min(maxAllowedHeight, canvasLimitHeight));
 
   let maxTitleWidth = 0;
   titleLines.forEach(line => {
@@ -690,7 +694,7 @@ function drawOverlayTables(anchorPoint, data) {
   totalTablesHeight += bottomPadding + rowHeight;
 
   const contentHeight = paddingY * 2 + titleHeight + titleGap + totalTablesHeight;
-  let boxHeight = Math.min(contentHeight, maxAllowedHeight);
+  let boxHeight = Math.min(contentHeight, effectiveMaxHeight);
   if (!Number.isFinite(boxHeight) || boxHeight <= 0) {
     boxHeight = Math.max(minAllowedHeight, rowHeight * 4);
   }
@@ -713,6 +717,9 @@ function drawOverlayTables(anchorPoint, data) {
   }
   if (boxY < OVERLAY_MARGIN) {
     boxY = OVERLAY_MARGIN;
+  }
+  if (boxY + boxHeight > maxY) {
+    boxY = Math.max(OVERLAY_MARGIN, maxY - boxHeight);
   }
 
   const scrollable = contentHeight > boxHeight + 0.5;
