@@ -201,7 +201,7 @@ class GraphWebServer:
             self._send_json(handler, 400, {'error': 'missing topic or action'})
             return
         try:
-            status, payload = self._topic_tool_handler(action, topic, peer or None)
+            status, payload = self._topic_tool_handler(action, topic, peer or None, params)
         except Exception as exc:  # pragma: no cover - defensive
             self._logger.exception('topic_tool handler raised an exception')
             self._send_json(handler, 500, {'error': f'failed to process request: {exc}'})

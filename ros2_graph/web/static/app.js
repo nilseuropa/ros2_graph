@@ -129,6 +129,14 @@ const serviceCallerState = {
 
 let serviceFieldIdCounter = 0;
 
+const topicEchoState = {
+  active: false,
+  topicName: '',
+  peerName: '',
+  streamId: '',
+  timer: null,
+};
+
 const SERVICE_BOOLEAN_TYPES = new Set(['bool', 'boolean']);
 const SERVICE_INTEGER_TYPES = new Set([
   'int8',
@@ -356,6 +364,7 @@ const OVERLAY_PADDING = 12;
 const OVERLAY_MAX_WIDTH = 320;
 const OVERLAY_MARGIN = 12;
 const TOPIC_TOOL_TIMEOUT = 15000;
+const TOPIC_ECHO_REFRESH_MS = 750;
 const FEATURE_PARAM_ORDER = ['name', 'class', 'version', 'gui_version', 'state'];
 const FEATURE_LABELS = {
   name: 'Name',
@@ -448,6 +457,7 @@ function getContextMenuItemsForTarget(target) {
     return [
       { action: 'info', label: 'Info' },
       { action: 'stats', label: 'Stats' },
+      { action: 'echo', label: 'Echo' },
     ];
   }
   if (target.type === 'node') {
@@ -764,6 +774,8 @@ function hideOverlay() {
     clearOverlayCanvas();
     return;
   }
+  const echoWasActive = topicEchoState.active;
+  stopTopicEcho({ notify: echoWasActive });
   overlayState.visible = false;
   overlayState.nodeName = '';
   overlayState.description = '';
@@ -2058,6 +2070,7 @@ async function handleContextMenuAction(action, target) {
   if (!target) {
     return;
   }
+  stopTopicEcho();
 
   if (target.type === 'topic-edge' || target.type === 'topic-node') {
     const topicGeometry = currentScene.nodes?.get(target.topicName);
@@ -2073,35 +2086,40 @@ async function handleContextMenuAction(action, target) {
       return;
     }
 
-    if (action !== 'stats') {
-      statusEl.textContent = `Unsupported topic action: ${action}`;
+    if (action === 'stats') {
+      const peerInfo = target.peerName ? ` ↔ ${target.peerName}` : '';
+      const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
+      const measuringText =
+        `Topic: ${target.topicName}\n` +
+        (target.peerName ? `Peer: ${target.peerName}\n` : '') +
+        'Collecting stats…';
+      showOverlayWithDescription(target.topicName, measuringText, false);
+      statusEl.textContent = `Collecting ${action} for ${target.topicName}${peerInfo}…`;
+      try {
+        const payload = await requestTopicTool(action, target.topicName, target.peerName);
+        showTopicMeasurementOverlay(action, target, payload);
+      } catch (err) {
+        let message;
+        if (err?.name === 'AbortError') {
+          message = 'request timed out';
+        } else {
+          message = err?.message || String(err);
+        }
+        statusEl.textContent = `Failed to collect ${action} for ${target.topicName}: ${message}`;
+        showOverlayWithDescription(
+          target.topicName,
+          `Topic: ${target.topicName}\n${actionLabel} measurement failed.\n${message}`,
+        );
+      }
       return;
     }
 
-    const peerInfo = target.peerName ? ` ↔ ${target.peerName}` : '';
-    const actionLabel = action.charAt(0).toUpperCase() + action.slice(1);
-    const measuringText =
-      `Topic: ${target.topicName}\n` +
-      (target.peerName ? `Peer: ${target.peerName}\n` : '') +
-      'Collecting stats…';
-    showOverlayWithDescription(target.topicName, measuringText, false);
-    statusEl.textContent = `Collecting ${action} for ${target.topicName}${peerInfo}…`;
-    try {
-      const payload = await requestTopicTool(action, target.topicName, target.peerName);
-      showTopicMeasurementOverlay(action, target, payload);
-    } catch (err) {
-      let message;
-      if (err?.name === 'AbortError') {
-        message = 'request timed out';
-      } else {
-        message = err?.message || String(err);
-      }
-      statusEl.textContent = `Failed to collect ${action} for ${target.topicName}: ${message}`;
-      showOverlayWithDescription(
-        target.topicName,
-        `Topic: ${target.topicName}\n${actionLabel} measurement failed.\n${message}`,
-      );
+    if (action === 'echo') {
+      await startTopicEcho(target.topicName, target.peerName);
+      return;
     }
+
+    statusEl.textContent = `Unsupported topic action: ${action}`;
     return;
   }
 
@@ -2270,12 +2288,20 @@ function validateContextMenuTarget() {
   }
 }
 
-async function requestTopicTool(action, topicName, peerName) {
+async function requestTopicTool(action, topicName, peerName, options = {}) {
   const params = new URLSearchParams();
   params.set('action', action);
   params.set('topic', topicName);
   if (peerName) {
     params.set('peer', peerName);
+  }
+  const extraParams = options?.params;
+  if (extraParams && typeof extraParams === 'object') {
+    Object.entries(extraParams).forEach(([key, value]) => {
+      if (value !== undefined && value !== null) {
+        params.set(key, String(value));
+      }
+    });
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TOPIC_TOOL_TIMEOUT);
@@ -2300,6 +2326,17 @@ async function requestTopicTool(action, topicName, peerName) {
     throw new Error(message);
   }
   return payload;
+}
+
+async function requestTopicEcho(topicName, mode, streamId, peerName) {
+  const params = {};
+  if (mode) {
+    params.mode = mode;
+  }
+  if (streamId) {
+    params.stream = streamId;
+  }
+  return requestTopicTool('echo', topicName, peerName, { params });
 }
 
 async function requestNodeTool(action, nodeName, options = {}) {
@@ -2882,12 +2919,240 @@ function resolveOverlayDescription(nodeName, geometry) {
   return description;
 }
 
+function stringifyEchoValue(value, limit = 160) {
+  let text;
+  if (value === null || value === undefined) {
+    text = String(value);
+  } else if (typeof value === 'string') {
+    text = value;
+  } else if (typeof value === 'number' || typeof value === 'boolean') {
+    text = String(value);
+  } else if (Array.isArray(value) || typeof value === 'object') {
+    try {
+      text = JSON.stringify(value);
+    } catch (err) {
+      text = String(value);
+    }
+  } else {
+    text = String(value);
+  }
+  if (text.length > limit) {
+    return `${text.slice(0, Math.max(0, limit - 1))}…`;
+  }
+  return text;
+}
+
+function buildTopicEchoHeaderRows(header) {
+  if (!header || typeof header !== 'object') {
+    return [];
+  }
+  const rows = [];
+  const walk = (value, path) => {
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const entries = Object.entries(value);
+      if (!entries.length) {
+        rows.push([path, '{}']);
+        return;
+      }
+      entries.forEach(([key, child]) => {
+        walk(child, path ? `${path}.${key}` : key);
+      });
+      return;
+    }
+    if (Array.isArray(value)) {
+      rows.push([path, stringifyEchoValue(value)]);
+      return;
+    }
+    rows.push([path, stringifyEchoValue(value)]);
+  };
+  Object.entries(header).forEach(([key, value]) => {
+    walk(value, key);
+  });
+  return rows;
+}
+
+function stopTopicEcho(options = {}) {
+  const { sendStop = true, notify = false } = options;
+  if (topicEchoState.timer) {
+    clearTimeout(topicEchoState.timer);
+    topicEchoState.timer = null;
+  }
+  if (!topicEchoState.active) {
+    return;
+  }
+  const topicName = topicEchoState.topicName;
+  const streamId = topicEchoState.streamId;
+  const peerName = topicEchoState.peerName;
+  topicEchoState.active = false;
+  topicEchoState.topicName = '';
+  topicEchoState.peerName = '';
+  topicEchoState.streamId = '';
+  if (sendStop && streamId) {
+    void requestTopicEcho(topicName, 'stop', streamId, peerName).catch(() => undefined);
+  }
+  if (notify && topicName) {
+    statusEl.textContent = `Echo stopped for ${topicName}`;
+  }
+}
+
+function renderTopicEchoOverlay(topicName, payload) {
+  const data = payload || {};
+  const titleLines = [`Topic: ${topicName}`];
+  const typeLabel = data.type ? String(data.type) : '';
+  if (typeLabel) {
+    titleLines.push(`Type: ${typeLabel}`);
+  }
+  const infoParts = [];
+  if (typeof data.count === 'number') {
+    infoParts.push(`Messages: ${data.count}`);
+  }
+  const sample = data.sample;
+  if (sample?.received_iso) {
+    infoParts.push(`Last: ${sample.received_iso}`);
+  }
+  if (infoParts.length) {
+    titleLines.push(infoParts.join(' • '));
+  }
+  if (!sample) {
+    const lines = [...titleLines, 'Waiting for messages…'];
+    showOverlayWithDescription(topicName, lines.join('\n'), false, 0, { preserveEcho: true });
+    return;
+  }
+
+  const tables = [];
+  const headerRows = buildTopicEchoHeaderRows(sample.header);
+  if (headerRows.length) {
+    tables.push({
+      title: 'Header',
+      headers: ['Field', 'Value'],
+      rows: headerRows,
+    });
+  }
+  const dataText = typeof sample.data_text === 'string' && sample.data_text.length
+    ? sample.data_text
+    : stringifyEchoValue(sample.data);
+  if (dataText) {
+    tables.push({
+      title: 'Data',
+      headers: ['Value'],
+      rows: [[dataText]],
+    });
+  }
+  if (!tables.length) {
+    tables.push({
+      title: 'Data',
+      headers: ['Value'],
+      rows: [['(no data available)']],
+    });
+  }
+
+  showOverlayWithTables(
+    topicName,
+    {
+      titleLines,
+      tables,
+      context: {
+        echoStream: true,
+      },
+    },
+    { preserveEcho: true },
+  );
+}
+
+function scheduleTopicEchoPoll() {
+  if (!topicEchoState.active || !topicEchoState.streamId) {
+    return;
+  }
+  if (topicEchoState.timer) {
+    clearTimeout(topicEchoState.timer);
+  }
+  topicEchoState.timer = window.setTimeout(() => {
+    void pollTopicEcho();
+  }, TOPIC_ECHO_REFRESH_MS);
+}
+
+async function pollTopicEcho() {
+  if (!topicEchoState.active || !topicEchoState.streamId) {
+    return;
+  }
+  topicEchoState.timer = null;
+  try {
+    const payload = await requestTopicEcho(
+      topicEchoState.topicName,
+      'poll',
+      topicEchoState.streamId,
+      topicEchoState.peerName,
+    );
+    handleTopicEchoPayload(payload);
+  } catch (err) {
+    const message = err?.message || String(err);
+    statusEl.textContent = `Echo stopped for ${topicEchoState.topicName}: ${message}`;
+    stopTopicEcho({ sendStop: false });
+  }
+}
+
+function handleTopicEchoPayload(payload) {
+  if (!topicEchoState.active || !payload || payload.topic !== topicEchoState.topicName) {
+    return;
+  }
+  if (payload.stopped) {
+    stopTopicEcho({ sendStop: false, notify: true });
+    return;
+  }
+  if (payload.stream_id) {
+    topicEchoState.streamId = payload.stream_id;
+  }
+  renderTopicEchoOverlay(topicEchoState.topicName, payload);
+  const hasSample = payload?.sample && payload.sample.data !== undefined;
+  if (hasSample) {
+    statusEl.textContent = `Echoing ${topicEchoState.topicName} (${payload.count ?? 0} messages)`;
+  } else {
+    statusEl.textContent = `Listening on ${topicEchoState.topicName}…`;
+  }
+  scheduleTopicEchoPoll();
+}
+
+async function startTopicEcho(topicName, peerName) {
+  stopTopicEcho();
+  topicEchoState.active = true;
+  topicEchoState.topicName = topicName;
+  topicEchoState.peerName = peerName || '';
+  topicEchoState.streamId = '';
+  topicEchoState.timer = null;
+  statusEl.textContent = `Starting echo for ${topicName}…`;
+  renderTopicEchoOverlay(topicName, { topic: topicName, type: '', count: 0, sample: null });
+  try {
+    const payload = await requestTopicEcho(topicName, 'start', '', peerName);
+    if (!topicEchoState.active || topicEchoState.topicName !== topicName) {
+      return;
+    }
+    handleTopicEchoPayload(payload);
+  } catch (err) {
+    const message = err?.message || String(err);
+    statusEl.textContent = `Failed to start echo for ${topicName}: ${message}`;
+    stopTopicEcho({ sendStop: false });
+    hideOverlay();
+  }
+}
+
 function showOverlayForNode(nodeName, geometry) {
   const description = resolveOverlayDescription(nodeName, geometry);
   showOverlayWithDescription(nodeName, description, true);
 }
 
-function showOverlayWithDescription(nodeName, description, auto = false, maxWidth = 0) {
+function showOverlayWithDescription(nodeName, description, auto = false, maxWidth = 0, options) {
+  let opts = options;
+  if (typeof auto === 'object' && options === undefined) {
+    opts = auto;
+    auto = false;
+    maxWidth = 0;
+  } else if (typeof maxWidth === 'object' && options === undefined) {
+    opts = maxWidth;
+    maxWidth = 0;
+  }
+  if (!opts?.preserveEcho) {
+    stopTopicEcho();
+  }
   overlayState.visible = true;
   overlayState.nodeName = nodeName;
   overlayState.description = description;
@@ -2900,7 +3165,10 @@ function showOverlayWithDescription(nodeName, description, auto = false, maxWidt
   refreshOverlay();
 }
 
-function showOverlayWithTables(nodeName, tableData) {
+function showOverlayWithTables(nodeName, tableData, options = {}) {
+  if (!options?.preserveEcho) {
+    stopTopicEcho();
+  }
   overlayState.visible = true;
   overlayState.nodeName = nodeName;
   overlayState.description = '';
