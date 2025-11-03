@@ -16,13 +16,17 @@ from rclpy.serialization import serialize_message
 from .web import GraphWebServer
 
 try:
-    from rcl_interfaces.msg import ParameterType, ParameterValue  # type: ignore
-    from rcl_interfaces.srv import GetParameters, ListParameters  # type: ignore
+    from rcl_interfaces.msg import Parameter, ParameterDescriptor, ParameterType, ParameterValue  # type: ignore
+    from rcl_interfaces.srv import DescribeParameters, GetParameters, ListParameters, SetParameters  # type: ignore
 except ImportError:  # pragma: no cover - allows docs/tests without ROS deps
+    Parameter = None  # type: ignore[assignment]
+    ParameterDescriptor = None  # type: ignore[assignment]
     ParameterType = None  # type: ignore[assignment]
     ParameterValue = None  # type: ignore[assignment]
+    DescribeParameters = None  # type: ignore[assignment]
     GetParameters = None  # type: ignore[assignment]
     ListParameters = None  # type: ignore[assignment]
+    SetParameters = None  # type: ignore[assignment]
 
 PARAMETER_NOT_SET = getattr(ParameterType, 'PARAMETER_NOT_SET', 0)
 PARAMETER_BOOL = getattr(ParameterType, 'PARAMETER_BOOL', 1)
@@ -36,6 +40,7 @@ PARAMETER_DOUBLE_ARRAY = getattr(ParameterType, 'PARAMETER_DOUBLE_ARRAY', 8)
 PARAMETER_STRING_ARRAY = getattr(ParameterType, 'PARAMETER_STRING_ARRAY', 9)
 
 PARAMETER_DISPLAY_MAX = 32
+PARAMETER_SERVICE_TIMEOUT = 5.0
 
 
 CLUSTER_NAMESPACE_LEVEL = 0
@@ -461,6 +466,193 @@ def _truncate_parameter_display(value: str, limit: int = PARAMETER_DISPLAY_MAX) 
     return text[: limit - 3] + '...'
 
 
+def _parameter_descriptor_to_dict(descriptor) -> Optional[Dict[str, object]]:
+    if descriptor is None:
+        return None
+    data: Dict[str, object] = {}
+    name = getattr(descriptor, 'name', '') or ''
+    if name:
+        data['name'] = str(name)
+    type_id = getattr(descriptor, 'type', None)
+    if isinstance(type_id, int):
+        data['type_id'] = type_id
+        data['type'] = _parameter_type_label(type_id)
+    description = getattr(descriptor, 'description', '') or ''
+    if description:
+        data['description'] = str(description)
+    constraints = getattr(descriptor, 'additional_constraints', '') or ''
+    if constraints:
+        data['additional_constraints'] = str(constraints)
+    data['read_only'] = bool(getattr(descriptor, 'read_only', False))
+    data['dynamic_typing'] = bool(getattr(descriptor, 'dynamic_typing', False))
+
+    integer_ranges = []
+    for item in list(getattr(descriptor, 'integer_range', []) or []):
+        integer_ranges.append({
+            'from_value': int(getattr(item, 'from_value', 0)),
+            'to_value': int(getattr(item, 'to_value', 0)),
+            'step': int(getattr(item, 'step', 0)),
+        })
+    if integer_ranges:
+        data['integer_ranges'] = integer_ranges
+
+    float_ranges = []
+    for item in list(getattr(descriptor, 'floating_point_range', []) or []):
+        float_ranges.append({
+            'from_value': float(getattr(item, 'from_value', 0.0)),
+            'to_value': float(getattr(item, 'to_value', 0.0)),
+            'step': float(getattr(item, 'step', 0.0)),
+        })
+    if float_ranges:
+        data['floating_point_ranges'] = float_ranges
+
+    return data
+
+
+def _parse_parameter_input(param_type: Optional[int], raw_value: object) -> object:
+    if not isinstance(param_type, int):
+        raise ValueError('unknown parameter type')
+
+    def _coerce_bool(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {'true', '1', 'yes', 'on'}:
+                return True
+            if text in {'false', '0', 'no', 'off'}:
+                return False
+        raise ValueError('expected boolean value')
+
+    def _ensure_array(value: object) -> List[object]:
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ValueError('expected JSON array') from exc
+            if not isinstance(parsed, list):
+                raise ValueError('expected JSON array')
+            return list(parsed)
+        raise ValueError('expected array value')
+
+    if param_type == PARAMETER_NOT_SET:
+        return None
+    if param_type == PARAMETER_BOOL:
+        return _coerce_bool(raw_value)
+    if param_type == PARAMETER_INTEGER:
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            if not text:
+                raise ValueError('expected integer value')
+            return int(text, 0)
+        if isinstance(raw_value, (int, float)):
+            return int(raw_value)
+        raise ValueError('expected integer value')
+    if param_type == PARAMETER_DOUBLE:
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            if not text:
+                raise ValueError('expected floating-point value')
+            return float(text)
+        if isinstance(raw_value, (int, float)):
+            return float(raw_value)
+        raise ValueError('expected floating-point value')
+    if param_type == PARAMETER_STRING:
+        return '' if raw_value is None else str(raw_value)
+    if param_type == PARAMETER_BYTE_ARRAY:
+        if isinstance(raw_value, (bytes, bytearray)):
+            return bytes(raw_value)
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            if not text:
+                return bytes()
+            if text.startswith('0x'):
+                try:
+                    return bytes.fromhex(text[2:])
+                except ValueError as exc:
+                    raise ValueError('expected hex string for byte array') from exc
+        items = _ensure_array(raw_value)
+        try:
+            return bytes(int(item) & 0xFF for item in items)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('expected array of integers (0-255)') from exc
+    if param_type == PARAMETER_BOOL_ARRAY:
+        items = _ensure_array(raw_value)
+        return [_coerce_bool(item) for item in items]
+    if param_type == PARAMETER_INTEGER_ARRAY:
+        items = _ensure_array(raw_value)
+        result = []
+        for item in items:
+            if isinstance(item, str):
+                text = item.strip()
+                if not text:
+                    raise ValueError('expected integer value')
+                result.append(int(text, 0))
+            elif isinstance(item, (int, float)):
+                result.append(int(item))
+            else:
+                raise ValueError('expected integer value')
+        return result
+    if param_type == PARAMETER_DOUBLE_ARRAY:
+        items = _ensure_array(raw_value)
+        result = []
+        for item in items:
+            if isinstance(item, str):
+                text = item.strip()
+                if not text:
+                    raise ValueError('expected floating-point value')
+                result.append(float(text))
+            elif isinstance(item, (int, float)):
+                result.append(float(item))
+            else:
+                raise ValueError('expected floating-point value')
+        return result
+    if param_type == PARAMETER_STRING_ARRAY:
+        items = _ensure_array(raw_value)
+        return ['' if item is None else str(item) for item in items]
+    raise ValueError(f'unhandled parameter type {param_type}')
+
+
+def _make_parameter_message(name: str, param_type: int, value: object) -> 'Parameter':
+    if Parameter is None or ParameterValue is None:
+        raise RuntimeError('parameter services unavailable')
+    param_msg = Parameter()
+    param_msg.name = name
+    value_msg = ParameterValue()
+    value_msg.type = param_type
+    if param_type == PARAMETER_NOT_SET:
+        pass
+    elif param_type == PARAMETER_BOOL:
+        value_msg.bool_value = bool(value)
+    elif param_type == PARAMETER_INTEGER:
+        value_msg.integer_value = int(value)
+    elif param_type == PARAMETER_DOUBLE:
+        value_msg.double_value = float(value)
+    elif param_type == PARAMETER_STRING:
+        value_msg.string_value = '' if value is None else str(value)
+    elif param_type == PARAMETER_BYTE_ARRAY:
+        value_msg.byte_array_value = list(value if isinstance(value, (bytes, bytearray)) else bytes(value))
+    elif param_type == PARAMETER_BOOL_ARRAY:
+        value_msg.bool_array_value = [bool(item) for item in value]
+    elif param_type == PARAMETER_INTEGER_ARRAY:
+        value_msg.integer_array_value = [int(item) for item in value]
+    elif param_type == PARAMETER_DOUBLE_ARRAY:
+        value_msg.double_array_value = [float(item) for item in value]
+    elif param_type == PARAMETER_STRING_ARRAY:
+        value_msg.string_array_value = ['' if item is None else str(item) for item in value]
+    else:
+        raise ValueError(f'unhandled parameter type {param_type}')
+    param_msg.value = value_msg
+    return param_msg
+
+
 def _format_qos(profile: QoSProfile | None) -> str:
     if profile is None:
         return ''
@@ -489,10 +681,17 @@ class Ros2GraphNode(Node):
         self.declare_parameter('web_enable', True)
         self.declare_parameter('web_host', '0.0.0.0')
         self.declare_parameter('web_port', 8734)
+        self.declare_parameter('parameter_service_timeout', PARAMETER_SERVICE_TIMEOUT)
 
         interval = max(float(self.get_parameter('update_interval').value), 0.1)
         self._output_format = str(self.get_parameter('output_format').value).lower()
         self._print_once = bool(self.get_parameter('print_once').value)
+        timeout_param = self.get_parameter('parameter_service_timeout').value
+        try:
+            timeout_value = float(timeout_param)
+        except (TypeError, ValueError):
+            timeout_value = PARAMETER_SERVICE_TIMEOUT
+        self._parameter_service_timeout = max(timeout_value, 0.5)
         self._metrics_lock = threading.Lock()
         self._metrics_cache: Dict[Tuple[str, Tuple[str, ...]], Dict[str, object]] = {}
         self._metrics_cache_ttl = 5.0
@@ -565,13 +764,18 @@ class Ros2GraphNode(Node):
             for key in stale_keys:
                 self._metrics_cache.pop(key, None)
 
-    def _call_parameter_service(self, srv_type, service_name: str, request, timeout: float = 2.0):
+    def _call_parameter_service(self, srv_type, service_name: str, request, timeout: Optional[float] = None):
         client = self.create_client(srv_type, service_name)
+        deadline_timeout = timeout
+        if deadline_timeout is None:
+            deadline_timeout = getattr(self, '_parameter_service_timeout', PARAMETER_SERVICE_TIMEOUT)
+        deadline_timeout = max(float(deadline_timeout), 0.1)
         try:
-            if not client.wait_for_service(timeout_sec=timeout):
+            if not client.wait_for_service(timeout_sec=deadline_timeout):
                 raise TimeoutError(f'service {service_name} unavailable')
             future = client.call_async(request)
-            deadline = time.monotonic() + max(timeout, 0.1)
+
+            deadline = time.monotonic() + max(deadline_timeout, 0.1)
             while True:
                 if future.done():
                     if future.cancelled():
@@ -600,7 +804,12 @@ class Ros2GraphNode(Node):
         list_request = ListParameters.Request()
         list_request.depth = 0
 
-        list_response = self._call_parameter_service(ListParameters, list_service, list_request)
+        list_response = self._call_parameter_service(
+            ListParameters,
+            list_service,
+            list_request,
+            timeout=self._parameter_service_timeout,
+        )
         result = getattr(list_response, 'result', None)
         names = list((getattr(result, 'names', []) or [])) if result is not None else []
 
@@ -611,23 +820,85 @@ class Ros2GraphNode(Node):
         get_service = f'{fully_qualified}/get_parameters'
         get_request = GetParameters.Request()
         get_request.names = list(names)
-        get_response = self._call_parameter_service(GetParameters, get_service, get_request)
+        get_response = self._call_parameter_service(
+            GetParameters,
+            get_service,
+            get_request,
+            timeout=self._parameter_service_timeout,
+        )
 
         values = list(getattr(get_response, 'values', []) or [])
         parameters: List[Dict[str, object]] = []
         for name, value in zip(names, values):
             type_id = getattr(value, 'type', None)
-            display_value = _truncate_parameter_display(
-                _stringify_parameter_value(type_id, value),
-                PARAMETER_DISPLAY_MAX,
-            )
+            full_text = _stringify_parameter_value(type_id, value)
+            display_value = _truncate_parameter_display(full_text, PARAMETER_DISPLAY_MAX)
             parameters.append({
                 'name': name,
                 'type': _parameter_type_label(type_id),
+                'type_id': int(type_id) if isinstance(type_id, int) else None,
                 'value': display_value,
+                'raw_value': full_text,
             })
 
         return parameters
+
+    def _describe_parameter_for_node(
+        self,
+        base: str,
+        namespace: str,
+        name: str,
+    ) -> Optional[Dict[str, object]]:
+        if DescribeParameters is None:
+            raise RuntimeError('parameter description service unavailable')
+        fully_qualified = _fully_qualified_node_name(namespace, base)
+        describe_service = f'{fully_qualified}/describe_parameters'
+        request = DescribeParameters.Request()
+        request.names = [name]
+
+        response = self._call_parameter_service(
+            DescribeParameters,
+            describe_service,
+            request,
+            timeout=self._parameter_service_timeout,
+        )
+        descriptors = list(getattr(response, 'descriptors', []) or [])
+        if not descriptors:
+            return None
+        descriptor = descriptors[0]
+        return _parameter_descriptor_to_dict(descriptor)
+
+    def _set_parameter_for_node(
+        self,
+        base: str,
+        namespace: str,
+        name: str,
+        type_id: int,
+        value: object,
+    ) -> Tuple[bool, str]:
+        if SetParameters is None:
+            raise RuntimeError('parameter update service unavailable')
+        fully_qualified = _fully_qualified_node_name(namespace, base)
+        set_service = f'{fully_qualified}/set_parameters'
+        request = SetParameters.Request()
+        try:
+            request.parameters = [_make_parameter_message(name, type_id, value)]
+        except ValueError as exc:
+            raise ValueError(f'failed to construct parameter message: {exc}') from exc
+
+        response = self._call_parameter_service(
+            SetParameters,
+            set_service,
+            request,
+            timeout=self._parameter_service_timeout,
+        )
+        results = list(getattr(response, 'results', []) or [])
+        if not results:
+            return False, 'no response from set_parameters'
+        result = results[0]
+        success = bool(getattr(result, 'successful', False))
+        reason = str(getattr(result, 'reason', '') or '')
+        return success, reason
 
     def _handle_topic_tool_request(self, action: str, topic: str, peer: Optional[str]) -> Tuple[int, Dict[str, object]]:
         action = (action or '').lower()
@@ -660,9 +931,14 @@ class Ros2GraphNode(Node):
         metrics['topic'] = topic
         return 200, metrics
 
-    def _handle_node_tool_request(self, action: str, node_name: str) -> Tuple[int, Dict[str, object]]:
+    def _handle_node_tool_request(
+        self,
+        action: str,
+        node_name: str,
+        payload: Optional[Dict[str, object]] = None,
+    ) -> Tuple[int, Dict[str, object]]:
         action = (action or '').lower()
-        if action not in {'services', 'parameters'}:
+        if action not in {'services', 'parameters', 'set_parameter', 'describe_parameter'}:
             return 400, {'error': f"unsupported action '{action}'"}
 
         snapshot = self._last_snapshot
@@ -698,28 +974,112 @@ class Ros2GraphNode(Node):
                 'count': len(services),
             }
 
-        if ListParameters is None or GetParameters is None:
-            return 503, {'error': 'parameter services unavailable'}
+        if action == 'parameters':
+            if ListParameters is None or GetParameters is None:
+                return 503, {'error': 'parameter services unavailable'}
 
-        try:
-            parameters = self._collect_parameters_for_node(base, namespace)
-        except TimeoutError as exc:
-            self.get_logger().warning(f'Parameter query timed out for {node_name}: {exc}')
-            return 504, {'error': str(exc)}
-        except Exception as exc:  # pragma: no cover - defensive
-            self.get_logger().warning(f'Failed to fetch parameters for {node_name}: {exc}')
-            return 500, {'error': str(exc)}
+            try:
+                parameters = self._collect_parameters_for_node(base, namespace)
+            except TimeoutError as exc:
+                self.get_logger().warning(f'Parameter query timed out for {node_name}: {exc}')
+                return 504, {'error': str(exc)}
+            except Exception as exc:  # pragma: no cover - defensive
+                self.get_logger().warning(f'Failed to fetch parameters for {node_name}: {exc}')
+                return 500, {'error': str(exc)}
 
-        parameters.sort(key=lambda item: item['name'])
+            parameters.sort(key=lambda item: item['name'])
 
-        return 200, {
-            'action': action,
-            'node': node_name,
-            'namespace': namespace,
-            'base': base,
-            'parameters': parameters,
-            'count': len(parameters),
-        }
+            return 200, {
+                'action': action,
+                'node': node_name,
+                'namespace': namespace,
+                'base': base,
+                'parameters': parameters,
+                'count': len(parameters),
+            }
+
+        if action == 'describe_parameter':
+            if DescribeParameters is None:
+                return 503, {'error': 'parameter description service unavailable'}
+            details = dict(payload or {})
+            param_name = str(details.get('name') or '').strip()
+            if not param_name:
+                return 400, {'error': 'missing parameter name'}
+            try:
+                descriptor = self._describe_parameter_for_node(base, namespace, param_name)
+            except TimeoutError as exc:
+                self.get_logger().warning(f'Parameter describe timed out for {node_name}/{param_name}: {exc}')
+                return 504, {'error': str(exc)}
+            except Exception as exc:  # pragma: no cover - defensive
+                self.get_logger().warning(f'Failed to describe parameter {param_name} for {node_name}: {exc}')
+                return 500, {'error': str(exc)}
+            if descriptor is None:
+                return 404, {'error': f'parameter {param_name} not found'}
+            type_id = None
+            if isinstance(descriptor, dict):
+                raw_type_id = descriptor.get('type_id')
+                if isinstance(raw_type_id, int):
+                    type_id = raw_type_id
+            return 200, {
+                'action': action,
+                'node': node_name,
+                'namespace': namespace,
+                'base': base,
+                'parameter': {
+                    'name': param_name,
+                    'type_id': type_id,
+                    'type': _parameter_type_label(type_id),
+                    'descriptor': descriptor,
+                },
+            }
+
+        if action == 'set_parameter':
+            if SetParameters is None or Parameter is None or ParameterValue is None:
+                return 503, {'error': 'parameter update service unavailable'}
+            details = dict(payload or {})
+            param_name = str(details.get('name') or '').strip()
+            if not param_name:
+                return 400, {'error': 'missing parameter name'}
+            raw_type_id = details.get('type_id')
+            if raw_type_id is None:
+                return 400, {'error': 'missing parameter type'}
+            try:
+                type_id = int(raw_type_id)
+            except (TypeError, ValueError):
+                return 400, {'error': f'invalid parameter type: {raw_type_id!r}'}
+            raw_value = details.get('value', '')
+            try:
+                parsed_value = _parse_parameter_input(type_id, raw_value)
+            except ValueError as exc:
+                return 400, {'error': str(exc)}
+
+            try:
+                success, reason = self._set_parameter_for_node(base, namespace, param_name, type_id, parsed_value)
+            except TimeoutError as exc:
+                self.get_logger().warning(f'Parameter set timed out for {node_name}/{param_name}: {exc}')
+                return 504, {'error': str(exc)}
+            except Exception as exc:  # pragma: no cover - defensive
+                self.get_logger().warning(f'Failed to set parameter {param_name} for {node_name}: {exc}')
+                return 500, {'error': str(exc)}
+
+            if not success:
+                message = reason or 'parameter update rejected'
+                return 409, {'error': message}
+
+            return 200, {
+                'action': action,
+                'node': node_name,
+                'namespace': namespace,
+                'base': base,
+                'parameter': {
+                    'name': param_name,
+                    'type': _parameter_type_label(type_id),
+                    'type_id': type_id,
+                    'value': _stringify_parameter_value(type_id, parsed_value) if parsed_value is not None else '',
+                },
+            }
+
+        return 400, {'error': f"unsupported action '{action}'"}
 
     def _build_topic_info_payload(
         self,

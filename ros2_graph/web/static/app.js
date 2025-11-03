@@ -64,6 +64,42 @@ const overlayState = {
   layout: null,
 };
 
+const PARAMETER_NOT_SET = 0;
+const PARAMETER_BOOL = 1;
+const PARAMETER_INTEGER = 2;
+const PARAMETER_DOUBLE = 3;
+const PARAMETER_STRING = 4;
+const PARAMETER_BYTE_ARRAY = 5;
+const PARAMETER_BOOL_ARRAY = 6;
+const PARAMETER_INTEGER_ARRAY = 7;
+const PARAMETER_DOUBLE_ARRAY = 8;
+const PARAMETER_STRING_ARRAY = 9;
+
+const parameterEditor = document.getElementById('parameterEditor');
+const parameterEditorForm = document.getElementById('parameterEditorForm');
+const parameterEditorTitle = document.getElementById('parameterEditorTitle');
+const parameterEditorSubtitle = document.getElementById('parameterEditorSubtitle');
+const parameterEditorBody = document.getElementById('parameterEditorBody');
+const parameterEditorMessage = document.getElementById('parameterEditorMessage');
+const parameterEditorClose = document.getElementById('parameterEditorClose');
+const parameterEditorCancel = document.getElementById('parameterEditorCancel');
+const parameterEditorApply = document.getElementById('parameterEditorApply');
+const parameterEditorBackdrop = parameterEditor?.querySelector('.parameter-editor__backdrop');
+
+const parameterEditorState = {
+  visible: false,
+  nodeName: '',
+  parameterName: '',
+  typeId: null,
+  descriptor: null,
+  entry: null,
+  getSubmitValue: null,
+  focusTarget: null,
+  readOnly: false,
+  submitting: false,
+  metadataWarning: null,
+};
+
 function setOverlayPointerCapture(enabled) {
   if (!overlayCanvas) {
     return;
@@ -105,11 +141,17 @@ function setOverlayHover(nextHover) {
 
 function updateOverlayHoverPosition(x, y) {
   if (!overlayState.visible || !overlayState.table || !overlayState.layout) {
+    if (overlayCanvas) {
+      overlayCanvas.style.cursor = 'default';
+    }
     setOverlayHover(null);
     return;
   }
   const { box, tables } = overlayState.layout;
   if (!box || !pointInRect(x, y, box)) {
+    if (overlayCanvas) {
+      overlayCanvas.style.cursor = 'default';
+    }
     setOverlayHover(null);
     return;
   }
@@ -138,6 +180,10 @@ function updateOverlayHoverPosition(x, y) {
       }
     }
   }
+  if (overlayCanvas) {
+    const parameterIndex = findParameterRowIndexAtPosition(x, y);
+    overlayCanvas.style.cursor = parameterIndex !== null ? 'pointer' : 'default';
+  }
   setOverlayHover(hover);
 }
 
@@ -159,12 +205,16 @@ function handleOverlayPointerMove(event) {
 
 function handleOverlayPointerLeave() {
   setOverlayHover(null);
+  if (overlayCanvas) {
+    overlayCanvas.style.cursor = 'default';
+  }
 }
 
 if (overlayCanvas) {
   overlayCanvas.addEventListener('pointermove', handleOverlayPointerMove);
   overlayCanvas.addEventListener('pointerleave', handleOverlayPointerLeave);
   overlayCanvas.addEventListener('pointerdown', handleOverlayPointerDown);
+  overlayCanvas.addEventListener('dblclick', handleOverlayDoubleClick);
 }
 const contextMenu = document.getElementById('contextMenu');
 const contextMenuState = {
@@ -173,6 +223,38 @@ const contextMenuState = {
   position: { x: 0, y: 0 },
   items: [],
 };
+
+if (parameterEditorForm) {
+  parameterEditorForm.addEventListener('submit', handleParameterEditorSubmit);
+}
+if (parameterEditorCancel) {
+  parameterEditorCancel.addEventListener('click', event => {
+    event.preventDefault();
+    closeParameterEditor();
+  });
+}
+if (parameterEditorClose) {
+  parameterEditorClose.addEventListener('click', event => {
+    event.preventDefault();
+    closeParameterEditor();
+  });
+}
+if (parameterEditor) {
+  parameterEditor.addEventListener('click', event => {
+    if (
+      !parameterEditorState.submitting &&
+      (event.target === parameterEditor || event.target === parameterEditorBackdrop)
+    ) {
+      closeParameterEditor();
+    }
+  });
+}
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && parameterEditorState.visible && !parameterEditorState.submitting) {
+    event.preventDefault();
+    closeParameterEditor();
+  }
+});
 const canvasContainer = document.getElementById('canvasContainer');
 const BASE_FONT_FAMILY = '"Times New Roman", serif';
 const BASE_FONT_SIZE = 14;
@@ -496,7 +578,7 @@ function drawOverlayTables(anchorPoint, data) {
   }
 
   processedTables.forEach((info, idx) => {
-    const tableLayout = { header: null, rows: [] };
+    const tableLayout = { header: null, rows: [], columnBounds: [], columnPositions: [], headers: info.headers };
     layoutInfo.tables[idx] = tableLayout;
     if (!info.columnCount) {
       return;
@@ -535,6 +617,19 @@ function drawOverlayTables(anchorPoint, data) {
       columnPositions.push(cursorX);
       cursorX += width + info.spacing;
     });
+    tableLayout.columnPositions = columnPositions.slice();
+    const columnBounds = columnPositions.map((pos, colIdx) => {
+      const prevEdge = colIdx === 0 ? baseX : (columnPositions[colIdx - 1] + pos) / 2;
+      const nextEdge =
+        colIdx === columnPositions.length - 1
+          ? boxX + boxWidth - paddingX
+          : (pos + columnPositions[colIdx + 1]) / 2;
+      return {
+        start: Math.max(boxX, prevEdge),
+        end: Math.min(boxX + boxWidth, nextEdge),
+      };
+    });
+    tableLayout.columnBounds = columnBounds;
 
     overlayCtx.fillStyle = '#58a6ff';
     info.headers.forEach((text, colIdx) => {
@@ -589,13 +684,18 @@ function hideOverlay() {
   overlayState.table = null;
   overlayState.layout = null;
   overlayState.hoverRow = null;
+  if (overlayCanvas) {
+    overlayCanvas.style.cursor = 'default';
+  }
   clearOverlayCanvas();
   setOverlayPointerCapture(false);
 }
 
 function handleOverlayPointerDown(event) {
+  if (!overlayCanvas) {
+    return;
+  }
   event.stopPropagation();
-  event.preventDefault();
   if (!overlayState.visible || !overlayState.layout) {
     return;
   }
@@ -613,7 +713,593 @@ function handleOverlayPointerDown(event) {
   const x = (event.clientX - rect.left) * scaleX;
   const y = (event.clientY - rect.top) * scaleY;
   if (!pointInRect(x, y, box)) {
+    event.preventDefault();
     hideOverlay();
+  }
+}
+
+function findParameterRowIndexAtPosition(x, y) {
+  const parameterEntries = overlayState.table?.context?.parameters;
+  if (!Array.isArray(parameterEntries) || parameterEntries.length === 0) {
+    return null;
+  }
+  const tables = Array.isArray(overlayState.layout?.tables) ? overlayState.layout.tables : [];
+  const dataTables = Array.isArray(overlayState.table.tables) ? overlayState.table.tables : [];
+  if (!tables.length || !dataTables.length) {
+    return null;
+  }
+  let rowOffset = 0;
+  for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
+    const layout = tables[tableIndex];
+    const tableData = dataTables[tableIndex];
+    if (!layout || !tableData) {
+      continue;
+    }
+    const headers = Array.isArray(tableData.headers) ? tableData.headers : [];
+    const isParameterTable =
+      headers.length >= 2 &&
+      String(headers[0]).toLowerCase() === 'name' &&
+      String(headers[1]).toLowerCase() === 'value';
+    if (!isParameterTable) {
+      continue;
+    }
+    const columnBounds = Array.isArray(layout.columnBounds) ? layout.columnBounds : [];
+    const valueBounds = columnBounds[1];
+    const rowRects = Array.isArray(layout.rows) ? layout.rows : [];
+    const rowCount = rowRects.length;
+    if (!valueBounds || x < valueBounds.start || x > valueBounds.end) {
+      rowOffset += rowCount;
+      continue;
+    }
+    for (let rowIndex = 0; rowIndex < rowRects.length; rowIndex += 1) {
+      const rowRect = rowRects[rowIndex];
+      if (pointInRect(x, y, rowRect)) {
+        const entryIndex = rowOffset + rowIndex;
+        if (entryIndex >= 0 && entryIndex < parameterEntries.length) {
+          return entryIndex;
+        }
+        return null;
+      }
+    }
+    rowOffset += rowCount;
+  }
+  return null;
+}
+
+function isArrayParameterType(typeId) {
+  return (
+    typeId === PARAMETER_BYTE_ARRAY ||
+    typeId === PARAMETER_BOOL_ARRAY ||
+    typeId === PARAMETER_INTEGER_ARRAY ||
+    typeId === PARAMETER_DOUBLE_ARRAY ||
+    typeId === PARAMETER_STRING_ARRAY
+  );
+}
+
+function updateParameterEditorMessage(text, isError = false) {
+  if (!parameterEditorMessage) {
+    return;
+  }
+  parameterEditorMessage.textContent = text || '';
+  parameterEditorMessage.classList.toggle('error', Boolean(isError && text));
+}
+
+function setParameterEditorBusy(isBusy) {
+  if (parameterEditorApply) {
+    if (parameterEditorState.readOnly) {
+      parameterEditorApply.disabled = true;
+    } else {
+      parameterEditorApply.disabled = Boolean(isBusy);
+    }
+  }
+  if (parameterEditorCancel) {
+    parameterEditorCancel.disabled = Boolean(isBusy);
+  }
+  if (parameterEditorClose) {
+    parameterEditorClose.disabled = Boolean(isBusy);
+  }
+}
+
+function resetParameterEditorState() {
+  parameterEditorState.visible = false;
+  parameterEditorState.nodeName = '';
+  parameterEditorState.parameterName = '';
+  parameterEditorState.typeId = null;
+  parameterEditorState.descriptor = null;
+  parameterEditorState.entry = null;
+  parameterEditorState.getSubmitValue = null;
+  parameterEditorState.focusTarget = null;
+  parameterEditorState.readOnly = false;
+  parameterEditorState.submitting = false;
+  parameterEditorState.metadataWarning = null;
+}
+
+function closeParameterEditor() {
+  if (!parameterEditorState.visible) {
+    resetParameterEditorState();
+    return;
+  }
+  if (parameterEditorState.submitting) {
+    return;
+  }
+  if (parameterEditor) {
+    parameterEditor.classList.remove('active');
+    parameterEditor.classList.add('hidden');
+    parameterEditor.setAttribute('aria-hidden', 'true');
+  }
+  if (parameterEditorBody) {
+    parameterEditorBody.innerHTML = '';
+  }
+  updateParameterEditorMessage('');
+  if (parameterEditorApply) {
+    parameterEditorApply.disabled = false;
+  }
+  if (parameterEditorCancel) {
+    parameterEditorCancel.disabled = false;
+  }
+  if (parameterEditorClose) {
+    parameterEditorClose.disabled = false;
+  }
+  resetParameterEditorState();
+}
+
+function createHintElement(text) {
+  const element = document.createElement('div');
+  element.className = 'parameter-editor__hint';
+  element.textContent = text;
+  return element;
+}
+
+function formatParameterDisplayValue(value) {
+  if (value === null || value === undefined) {
+    return '(empty)';
+  }
+  const text = String(value);
+  if (!text.length) {
+    return '(empty)';
+  }
+  if (text.length > 512) {
+    return `${text.slice(0, 512)}…`;
+  }
+  return text;
+}
+
+function formatRangeHint(range, isInteger) {
+  if (!range) {
+    return '';
+  }
+  const from = range.from_value;
+  const to = range.to_value;
+  if (from === undefined || to === undefined) {
+    return '';
+  }
+  const formatter = value => {
+    if (value === null || value === undefined) {
+      return '';
+    }
+    return isInteger ? String(Math.trunc(value)) : String(value);
+  };
+  let text = `Allowed range: ${formatter(from)} – ${formatter(to)}`;
+  const step = range.step;
+  if (step !== undefined && step !== null && Number(step) > 0) {
+    text += ` (step ${formatter(step)})`;
+  }
+  return text;
+}
+
+function buildParameterEditorControl(typeId, entry, descriptor) {
+  const field = document.createElement('div');
+  field.className = 'parameter-editor__field';
+  const label = document.createElement('label');
+  label.setAttribute('for', 'parameterEditorInput');
+  label.textContent = 'New value';
+  field.append(label);
+
+  const rawValue = entry && entry.raw_value !== undefined ? entry.raw_value : entry?.value;
+  const valueString = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+  let focusTarget = null;
+  let getValue = null;
+
+  if (typeId === PARAMETER_BOOL) {
+    const toggleWrapper = document.createElement('label');
+    toggleWrapper.className = 'parameter-editor__toggle';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = 'parameterEditorInput';
+    const normalized = valueString.trim().toLowerCase();
+    checkbox.checked = ['true', '1', 'yes', 'on'].includes(normalized);
+    const toggleText = document.createElement('span');
+    const updateToggleText = () => {
+      toggleText.textContent = checkbox.checked ? 'True' : 'False';
+    };
+    updateToggleText();
+    checkbox.addEventListener('change', updateToggleText);
+    toggleWrapper.append(checkbox, toggleText);
+    field.append(toggleWrapper);
+    focusTarget = checkbox;
+    getValue = () => ({ value: checkbox.checked ? 'true' : 'false' });
+    return { element: field, focusTarget, getValue };
+  }
+
+  if (typeId === PARAMETER_INTEGER || typeId === PARAMETER_DOUBLE) {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.id = 'parameterEditorInput';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.inputMode = typeId === PARAMETER_INTEGER ? 'numeric' : 'decimal';
+    if (valueString.length) {
+      input.value = valueString;
+    }
+    if (typeId === PARAMETER_INTEGER) {
+      input.step = '1';
+    } else {
+      input.step = 'any';
+    }
+
+    const ranges = typeId === PARAMETER_INTEGER
+      ? (Array.isArray(descriptor?.integer_ranges) ? descriptor.integer_ranges : [])
+      : (Array.isArray(descriptor?.floating_point_ranges) ? descriptor.floating_point_ranges : []);
+    if (Array.isArray(ranges) && ranges.length) {
+      const range = ranges[0];
+      if (range) {
+        if (Number.isFinite(range.from_value)) {
+          input.min = String(range.from_value);
+        }
+        if (Number.isFinite(range.to_value)) {
+          input.max = String(range.to_value);
+        }
+        if (Number.isFinite(range.step) && range.step > 0) {
+          input.step = String(range.step);
+        }
+        const rangeHint = formatRangeHint(range, typeId === PARAMETER_INTEGER);
+        if (rangeHint) {
+          field.append(createHintElement(rangeHint));
+        }
+      }
+    }
+
+    field.append(input);
+    focusTarget = input;
+    getValue = () => {
+      const nextValue = input.value.trim();
+      if (!nextValue.length) {
+        return { error: 'Enter a value' };
+      }
+      if (typeId === PARAMETER_INTEGER && !/^[-+]?\d+$/.test(nextValue)) {
+        return { error: 'Enter a valid integer' };
+      }
+      if (typeId === PARAMETER_DOUBLE) {
+        const parsed = Number(nextValue);
+        if (!Number.isFinite(parsed)) {
+          return { error: 'Enter a valid number' };
+        }
+      }
+      return { value: nextValue };
+    };
+    return { element: field, focusTarget, getValue };
+  }
+
+  if (typeId === PARAMETER_STRING) {
+    const useTextarea = valueString.includes('\n') || valueString.length > 120;
+    if (useTextarea) {
+      const textarea = document.createElement('textarea');
+      textarea.id = 'parameterEditorInput';
+      textarea.value = valueString;
+      textarea.autocomplete = 'off';
+      textarea.spellcheck = false;
+      textarea.rows = Math.min(Math.max(valueString.split('\n').length, 3), 10);
+      field.append(textarea);
+      focusTarget = textarea;
+      getValue = () => ({ value: textarea.value });
+    } else {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.id = 'parameterEditorInput';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+      input.placeholder = 'Enter string value';
+      input.value = valueString;
+      field.append(input);
+      focusTarget = input;
+      getValue = () => ({ value: input.value });
+    }
+    return { element: field, focusTarget, getValue };
+  }
+
+  if (isArrayParameterType(typeId)) {
+    const textarea = document.createElement('textarea');
+    textarea.id = 'parameterEditorInput';
+    textarea.autocomplete = 'off';
+    textarea.spellcheck = false;
+    textarea.rows = valueString.includes('\n') ? Math.min(Math.max(valueString.split('\n').length, 3), 12) : 6;
+    textarea.value = valueString || '[]';
+
+    let placeholder = '[1, 2, 3]';
+    let hintText = 'Enter a JSON array value.';
+    if (typeId === PARAMETER_BOOL_ARRAY) {
+      placeholder = '[true, false]';
+      hintText = 'Enter a JSON array of boolean values.';
+    } else if (typeId === PARAMETER_INTEGER_ARRAY) {
+      placeholder = '[1, 2, 3]';
+      hintText = 'Enter a JSON array of integers.';
+    } else if (typeId === PARAMETER_DOUBLE_ARRAY) {
+      placeholder = '[0.1, 0.2]';
+      hintText = 'Enter a JSON array of numbers.';
+    } else if (typeId === PARAMETER_STRING_ARRAY) {
+      placeholder = '["alpha", "beta"]';
+      hintText = 'Enter a JSON array of strings.';
+    } else if (typeId === PARAMETER_BYTE_ARRAY) {
+      placeholder = '[0, 127, 255]';
+      hintText = 'Enter a JSON array of bytes (0-255).';
+    }
+    textarea.placeholder = placeholder;
+    field.append(textarea);
+    field.append(createHintElement(hintText));
+    focusTarget = textarea;
+    getValue = () => {
+      const nextValue = textarea.value.trim();
+      if (!nextValue.length) {
+        return { error: 'Enter a JSON array value' };
+      }
+      try {
+        const parsed = JSON.parse(nextValue);
+        if (!Array.isArray(parsed)) {
+          return { error: 'Value must be a JSON array' };
+        }
+      } catch (err) {
+        return { error: 'Value must be a valid JSON array' };
+      }
+      return { value: nextValue };
+    };
+    return { element: field, focusTarget, getValue };
+  }
+
+  const fallback = document.createElement('input');
+  fallback.type = 'text';
+  fallback.id = 'parameterEditorInput';
+  fallback.autocomplete = 'off';
+  fallback.spellcheck = false;
+  fallback.placeholder = 'Enter value';
+  fallback.value = valueString;
+  field.append(fallback);
+  focusTarget = fallback;
+  getValue = () => ({ value: fallback.value });
+  return { element: field, focusTarget, getValue };
+}
+
+function openParameterEditor(nodeName, entry, parameterDetail, warningMessage) {
+  if (!parameterEditor) {
+    return;
+  }
+  let typeId = Number(parameterDetail?.type_id);
+  if (!Number.isFinite(typeId)) {
+    typeId = Number(entry?.type_id);
+  }
+  if (!Number.isFinite(typeId)) {
+    typeId = PARAMETER_STRING;
+  }
+  const descriptor = parameterDetail?.descriptor || null;
+  const typeLabel = parameterDetail?.type || (entry?.type ? String(entry.type) : '');
+  const paramName = typeof entry?.name === 'string' ? entry.name : '';
+
+  parameterEditorState.visible = true;
+  parameterEditorState.nodeName = nodeName;
+  parameterEditorState.parameterName = paramName;
+  parameterEditorState.typeId = typeId;
+  parameterEditorState.descriptor = descriptor;
+  parameterEditorState.entry = entry;
+  parameterEditorState.metadataWarning = warningMessage || null;
+  parameterEditorState.readOnly = Boolean(descriptor?.read_only);
+  parameterEditorState.submitting = false;
+  parameterEditorState.getSubmitValue = null;
+  parameterEditorState.focusTarget = null;
+
+  if (parameterEditorTitle) {
+    parameterEditorTitle.textContent = paramName || 'Parameter';
+  }
+  if (parameterEditorSubtitle) {
+    const subtitleParts = [`Node: ${nodeName}`];
+    if (typeLabel) {
+      subtitleParts.push(`Type: ${typeLabel}`);
+    }
+    parameterEditorSubtitle.textContent = subtitleParts.join(' • ');
+  }
+
+  if (parameterEditorBody) {
+    parameterEditorBody.innerHTML = '';
+    if (descriptor?.description) {
+      const descriptionText = String(descriptor.description).trim();
+      if (descriptionText) {
+        const descriptionBlock = document.createElement('div');
+        descriptionBlock.className = 'parameter-editor__description';
+        descriptionBlock.textContent = descriptionText;
+        parameterEditorBody.append(descriptionBlock);
+      }
+    }
+    if (warningMessage) {
+      parameterEditorBody.append(createHintElement(`Metadata limited: ${warningMessage}`));
+    }
+    const currentField = document.createElement('div');
+    currentField.className = 'parameter-editor__field';
+    const currentLabel = document.createElement('label');
+    currentLabel.textContent = 'Current value';
+    currentField.append(currentLabel);
+    const currentValueEl = document.createElement('div');
+    currentValueEl.className = 'parameter-editor__current';
+    const rawValue = entry && entry.raw_value !== undefined ? entry.raw_value : entry?.value;
+    currentValueEl.textContent = formatParameterDisplayValue(rawValue);
+    currentField.append(currentValueEl);
+    parameterEditorBody.append(currentField);
+
+    const control = buildParameterEditorControl(typeId, entry, descriptor);
+    if (control) {
+      parameterEditorBody.append(control.element);
+      parameterEditorState.getSubmitValue = control.getValue;
+      parameterEditorState.focusTarget = control.focusTarget;
+    }
+
+    if (descriptor?.additional_constraints) {
+      parameterEditorBody.append(createHintElement(String(descriptor.additional_constraints)));
+    }
+    if (descriptor?.dynamic_typing) {
+      parameterEditorBody.append(createHintElement('Dynamic typing is enabled for this parameter.'));
+    }
+  }
+
+  parameterEditor.classList.remove('hidden');
+  parameterEditor.classList.add('active');
+  parameterEditor.setAttribute('aria-hidden', 'false');
+
+  setParameterEditorBusy(false);
+  if (!parameterEditorState.getSubmitValue || parameterEditorState.readOnly) {
+    if (parameterEditorApply) {
+      parameterEditorApply.disabled = true;
+    }
+  }
+
+  const initialMessage = parameterEditorState.readOnly
+    ? 'Parameter is read-only; updates are disabled.'
+    : warningMessage
+    ? `Editing with limited metadata: ${warningMessage}`
+    : '';
+  updateParameterEditorMessage(initialMessage, parameterEditorState.readOnly);
+
+  const focusTarget =
+    parameterEditorState.focusTarget ||
+    parameterEditorApply ||
+    parameterEditorCancel ||
+    parameterEditorClose;
+  if (focusTarget && typeof focusTarget.focus === 'function') {
+    setTimeout(() => focusTarget.focus(), 0);
+  }
+}
+
+async function handleParameterEditorSubmit(event) {
+  event.preventDefault();
+  if (!parameterEditorState.visible || parameterEditorState.submitting) {
+    return;
+  }
+  if (parameterEditorState.readOnly) {
+    closeParameterEditor();
+    return;
+  }
+  if (typeof parameterEditorState.getSubmitValue !== 'function') {
+    updateParameterEditorMessage('Editor not ready for submission.', true);
+    return;
+  }
+  const result = parameterEditorState.getSubmitValue();
+  if (!result || typeof result !== 'object') {
+    updateParameterEditorMessage('Unable to read editor value.', true);
+    return;
+  }
+  if (result.error) {
+    updateParameterEditorMessage(String(result.error), true);
+    return;
+  }
+  const nextValue = result.value !== undefined ? result.value : '';
+  updateParameterEditorMessage('Applying update…');
+  parameterEditorState.submitting = true;
+  setParameterEditorBusy(true);
+  const nodeName = parameterEditorState.nodeName;
+  const paramName = parameterEditorState.parameterName;
+  const typeId = parameterEditorState.typeId;
+
+  try {
+    await requestNodeTool('set_parameter', nodeName, {
+      method: 'POST',
+      body: {
+        name: paramName,
+        type_id: typeId,
+        value: nextValue,
+      },
+    });
+  } catch (err) {
+    const message = err?.message || String(err);
+    updateParameterEditorMessage(`Failed to update: ${message}`, true);
+    parameterEditorState.submitting = false;
+    setParameterEditorBusy(false);
+    return;
+  }
+
+  parameterEditorState.submitting = false;
+  closeParameterEditor();
+  statusEl.textContent = `Updated ${paramName} on ${nodeName}`;
+  try {
+    const payload = await requestNodeTool('parameters', nodeName);
+    showNodeParametersOverlay(nodeName, payload);
+  } catch (err) {
+    const message = err?.message || String(err);
+    statusEl.textContent = `Updated ${paramName}, but refresh failed: ${message}`;
+  }
+}
+
+function handleOverlayDoubleClick(event) {
+  if (!overlayCanvas) {
+    return;
+  }
+  event.stopPropagation();
+  if (!overlayState.visible || !overlayState.layout || !overlayState.table) {
+    return;
+  }
+  const rect = overlayCanvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) {
+    return;
+  }
+  const scaleX = overlayCanvas.width / rect.width;
+  const scaleY = overlayCanvas.height / rect.height;
+  const x = (event.clientX - rect.left) * scaleX;
+  const y = (event.clientY - rect.top) * scaleY;
+  const parameterIndex = findParameterRowIndexAtPosition(x, y);
+  if (parameterIndex === null) {
+    return;
+  }
+  event.preventDefault();
+  void editParameterValue(parameterIndex);
+}
+
+async function editParameterValue(rowIndex) {
+  const nodeName = overlayState.nodeName;
+  const parameters = overlayState.table?.context?.parameters;
+  if (!nodeName || !Array.isArray(parameters) || rowIndex < 0 || rowIndex >= parameters.length) {
+    return;
+  }
+  const entry = parameters[rowIndex];
+  const paramName = typeof entry?.name === 'string' ? entry.name : '';
+  let typeId = Number(entry?.type_id);
+  if (!paramName) {
+    statusEl.textContent = `Unable to edit parameter for row ${rowIndex + 1}`;
+    return;
+  }
+  if (!Number.isFinite(typeId)) {
+    typeId = PARAMETER_STRING;
+  }
+
+  statusEl.textContent = `Loading details for ${paramName} on ${nodeName}…`;
+  let detail = null;
+  let warning = null;
+  try {
+    const payload = await requestNodeTool('describe_parameter', nodeName, {
+      method: 'POST',
+      body: {
+        name: paramName,
+      },
+    });
+    if (payload?.parameter) {
+      detail = payload.parameter;
+      if (!Number.isFinite(Number(detail.type_id))) {
+        detail.type_id = typeId;
+      }
+    }
+  } catch (err) {
+    warning = err?.message || String(err);
+  }
+
+  openParameterEditor(nodeName, entry, detail, warning);
+  if (warning) {
+    statusEl.textContent = `Editing ${paramName} on ${nodeName} (metadata limited: ${warning})`;
+  } else {
+    statusEl.textContent = `Editing ${paramName} on ${nodeName}`;
   }
 }
 
@@ -921,19 +1607,49 @@ async function requestTopicTool(action, topicName, peerName) {
   return payload;
 }
 
-async function requestNodeTool(action, nodeName) {
-  const params = new URLSearchParams();
-  params.set('action', action);
-  params.set('node', nodeName);
+async function requestNodeTool(action, nodeName, options = {}) {
+  const method = (options?.method || 'GET').toUpperCase();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TOPIC_TOOL_TIMEOUT);
   let response;
   let payload = {};
   try {
-    response = await fetch(`/node_tool?${params.toString()}`, {
-      cache: 'no-store',
-      signal: controller.signal,
-    });
+    if (method === 'GET') {
+      const params = new URLSearchParams();
+      params.set('action', action);
+      params.set('node', nodeName);
+      const extraParams = options?.params;
+      if (extraParams && typeof extraParams === 'object') {
+        Object.entries(extraParams).forEach(([key, value]) => {
+          if (value !== undefined && value !== null) {
+            params.set(key, String(value));
+          }
+        });
+      }
+      response = await fetch(`/node_tool?${params.toString()}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+    } else if (method === 'POST') {
+      const body = Object.assign({}, options?.body || {});
+      if (!Object.prototype.hasOwnProperty.call(body, 'action')) {
+        body.action = action;
+      }
+      if (!Object.prototype.hasOwnProperty.call(body, 'node')) {
+        body.node = nodeName;
+      }
+      response = await fetch('/node_tool', {
+        method: 'POST',
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      });
+    } else {
+      throw new Error(`unsupported method ${method}`);
+    }
     try {
       payload = await response.json();
     } catch (err) {
@@ -1190,13 +1906,12 @@ function showNodeParametersOverlay(nodeName, payload) {
   if (payload.namespace) {
     titleLines.push(`Namespace: ${payload.namespace}`);
   }
-  const rows = Array.isArray(payload.parameters)
-    ? payload.parameters.map(entry => {
-        const name = entry?.name ?? '(unknown)';
-        const value = entry?.value ?? '';
-        return [name, String(value)];
-      })
-    : [];
+  const parameterEntries = Array.isArray(payload.parameters) ? payload.parameters : [];
+  const rows = parameterEntries.map(entry => {
+    const name = entry?.name ?? '(unknown)';
+    const value = entry?.value ?? '';
+    return [name, String(value)];
+  });
   const count = rows.length;
 
   if (!rows.length) {
@@ -1213,11 +1928,18 @@ function showNodeParametersOverlay(nodeName, payload) {
           rows,
         },
       ],
+      context: {
+        parameters: parameterEntries,
+      },
     });
   }
 
-  updateNodeFeatureInfoFromParameters(nodeName, payload.parameters);
-  statusEl.textContent = `Parameters for ${nodeName}: ${count} found`;
+  updateNodeFeatureInfoFromParameters(nodeName, parameterEntries);
+  if (count) {
+    statusEl.textContent = `Parameters for ${nodeName}: ${count} found (double-click a value to edit)`;
+  } else {
+    statusEl.textContent = `Parameters for ${nodeName}: ${count} found`;
+  }
 }
 
 function toGraphSpace(point) {

@@ -17,6 +17,26 @@
     <canvas id="overlayCanvas"></canvas>
     <div id="contextMenu" class="hidden"></div>
   </div>
+  <div id="parameterEditor" class="parameter-editor hidden" aria-hidden="true">
+    <div class="parameter-editor__backdrop"></div>
+    <form id="parameterEditorForm" class="parameter-editor__dialog" role="dialog" aria-modal="true" aria-labelledby="parameterEditorTitle">
+      <header class="parameter-editor__header">
+        <div>
+          <h2 id="parameterEditorTitle">Parameter</h2>
+          <p id="parameterEditorSubtitle" class="parameter-editor__subtitle"></p>
+        </div>
+        <button type="button" id="parameterEditorClose" class="parameter-editor__icon-btn" aria-label="Close parameter editor">×</button>
+      </header>
+      <section id="parameterEditorBody" class="parameter-editor__body"></section>
+      <footer class="parameter-editor__footer">
+        <div id="parameterEditorMessage" class="parameter-editor__message"></div>
+        <div class="parameter-editor__actions">
+          <button type="submit" id="parameterEditorApply">Apply</button>
+          <button type="button" id="parameterEditorCancel" class="secondary">Cancel</button>
+        </div>
+      </footer>
+    </form>
+  </div>
   <div id="footer">Data source: /graph endpoint (refresh every 2s)</div>
   <script src="/app.js" type="module"></script>
 </body>
