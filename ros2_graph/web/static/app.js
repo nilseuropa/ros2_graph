@@ -269,7 +269,6 @@ if (overlayCanvas) {
   overlayCanvas.addEventListener('pointermove', handleOverlayPointerMove);
   overlayCanvas.addEventListener('pointerleave', handleOverlayPointerLeave);
   overlayCanvas.addEventListener('pointerdown', handleOverlayPointerDown);
-  overlayCanvas.addEventListener('dblclick', handleOverlayDoubleClick);
 }
 const contextMenu = document.getElementById('contextMenu');
 const contextMenuState = {
@@ -785,6 +784,9 @@ function handleOverlayPointerDown(event) {
     return;
   }
   event.stopPropagation();
+  if (typeof event.button === 'number' && event.button !== 0) {
+    return;
+  }
   if (!overlayState.visible || !overlayState.layout) {
     return;
   }
@@ -801,6 +803,16 @@ function handleOverlayPointerDown(event) {
   const scaleY = overlayCanvas.height / rect.height;
   const x = (event.clientX - rect.left) * scaleX;
   const y = (event.clientY - rect.top) * scaleY;
+  const targetInfo = findActionableOverlayTarget(x, y);
+  if (targetInfo) {
+    event.preventDefault();
+    if (targetInfo.kind === 'parameter') {
+      void editParameterValue(targetInfo.index);
+    } else if (targetInfo.kind === 'service') {
+      void editService(targetInfo.index);
+    }
+    return;
+  }
   if (!pointInRect(x, y, box)) {
     event.preventDefault();
     hideOverlay();
@@ -1941,34 +1953,6 @@ async function editService(rowIndex) {
   statusEl.textContent = `Ready to call ${serviceName} on ${nodeName}`;
 }
 
-function handleOverlayDoubleClick(event) {
-  if (!overlayCanvas) {
-    return;
-  }
-  event.stopPropagation();
-  if (!overlayState.visible || !overlayState.layout || !overlayState.table) {
-    return;
-  }
-  const rect = overlayCanvas.getBoundingClientRect();
-  if (!rect.width || !rect.height) {
-    return;
-  }
-  const scaleX = overlayCanvas.width / rect.width;
-  const scaleY = overlayCanvas.height / rect.height;
-  const x = (event.clientX - rect.left) * scaleX;
-  const y = (event.clientY - rect.top) * scaleY;
-  const targetInfo = findActionableOverlayTarget(x, y);
-  if (!targetInfo) {
-    return;
-  }
-  event.preventDefault();
-  if (targetInfo.kind === 'parameter') {
-    void editParameterValue(targetInfo.index);
-  } else if (targetInfo.kind === 'service') {
-    void editService(targetInfo.index);
-  }
-}
-
 async function editParameterValue(rowIndex) {
   const nodeName = overlayState.nodeName;
   const parameters = overlayState.table?.context?.parameters;
@@ -2510,7 +2494,11 @@ function showNodeServicesOverlay(nodeName, payload) {
       },
     });
   }
-  statusEl.textContent = `Services for ${nodeName}: ${count} found`;
+  if (count) {
+    statusEl.textContent = `Services for ${nodeName}: ${count} found (click a service to call)`;
+  } else {
+    statusEl.textContent = `Services for ${nodeName}: ${count} found`;
+  }
 }
 
 function updateNodeFeatureInfoFromParameters(nodeName, parameters) {
@@ -2650,7 +2638,7 @@ function showNodeParametersOverlay(nodeName, payload) {
 
   updateNodeFeatureInfoFromParameters(nodeName, parameterEntries);
   if (count) {
-    statusEl.textContent = `Parameters for ${nodeName}: ${count} found (double-click a value to edit)`;
+    statusEl.textContent = `Parameters for ${nodeName}: ${count} found (click a value to edit)`;
   } else {
     statusEl.textContent = `Parameters for ${nodeName}: ${count} found`;
   }
