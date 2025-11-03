@@ -2971,6 +2971,32 @@ function buildTopicEchoHeaderRows(header) {
   return rows;
 }
 
+function buildTopicEchoDataRows(entries) {
+  if (!Array.isArray(entries) || !entries.length) {
+    return [];
+  }
+  const rows = [];
+  entries.forEach(entry => {
+    if (!entry || typeof entry !== 'object') {
+      return;
+    }
+    const depthRaw = entry.depth;
+    const depth = Number.isFinite(depthRaw) ? Math.max(0, depthRaw) : 0;
+    const label = typeof entry.label === 'string' ? entry.label : '';
+    const value = entry.value;
+    const indent = depth > 0 ? '    '.repeat(depth) : '';
+    const displayLabel = indent + label;
+    let displayValue = '';
+    if (typeof value === 'string') {
+      displayValue = value;
+    } else if (value !== null && value !== undefined) {
+      displayValue = stringifyEchoValue(value);
+    }
+    rows.push([displayLabel, displayValue]);
+  });
+  return rows;
+}
+
 function stopTopicEcho(options = {}) {
   const { sendStop = true, notify = false } = options;
   if (topicEchoState.timer) {
@@ -3028,15 +3054,24 @@ function renderTopicEchoOverlay(topicName, payload) {
       rows: headerRows,
     });
   }
-  const dataText = typeof sample.data_text === 'string' && sample.data_text.length
-    ? sample.data_text
-    : stringifyEchoValue(sample.data);
-  if (dataText) {
+  const structuredDataRows = buildTopicEchoDataRows(sample.data_rows);
+  if (structuredDataRows.length) {
     tables.push({
       title: 'Data',
-      headers: ['Value'],
-      rows: [[dataText]],
+      headers: ['Field', 'Value'],
+      rows: structuredDataRows,
     });
+  } else {
+    const dataText = typeof sample.data_text === 'string' && sample.data_text.length
+      ? sample.data_text
+      : stringifyEchoValue(sample.data);
+    if (dataText) {
+      tables.push({
+        title: 'Data',
+        headers: ['Value'],
+        rows: [[dataText]],
+      });
+    }
   }
   if (!tables.length) {
     tables.push({

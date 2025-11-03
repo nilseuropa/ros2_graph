@@ -503,6 +503,65 @@ def _stringify_echo_value(value: object, limit: int = 256) -> str:
     return text
 
 
+def _build_echo_data_rows(value: object, limit: int = 256) -> List[Dict[str, object]]:
+    rows: List[Dict[str, object]] = []
+
+    def walk(current: object, label: Optional[str], depth: int) -> None:
+        if isinstance(current, dict):
+            entries = list(current.items())
+            if label is not None:
+                rows.append({
+                    'depth': depth,
+                    'label': str(label),
+                    'value': '' if entries else '(empty)',
+                })
+                next_depth = depth + 1
+            else:
+                next_depth = depth
+            if entries:
+                for key, child in entries:
+                    walk(child, key, next_depth)
+            elif label is None:
+                rows.append({
+                    'depth': depth,
+                    'label': '',
+                    'value': '(empty)',
+                })
+            return
+
+        if isinstance(current, (list, tuple)):
+            items = list(current)
+            if label is not None:
+                rows.append({
+                    'depth': depth,
+                    'label': str(label),
+                    'value': '' if items else '(empty)',
+                })
+                next_depth = depth + 1
+            else:
+                next_depth = depth
+            if items:
+                for index, item in enumerate(items):
+                    walk(item, f'[{index}]', next_depth)
+            elif label is None:
+                rows.append({
+                    'depth': depth,
+                    'label': '',
+                    'value': '(empty)',
+                })
+            return
+
+        text = _stringify_echo_value(current, limit=limit)
+        rows.append({
+            'depth': depth,
+            'label': '' if label is None else str(label),
+            'value': text,
+        })
+
+    walk(value, None, 0)
+    return rows
+
+
 def _convert_message_to_primitive(msg: object) -> object:
     if msg is None:
         return None
@@ -612,6 +671,7 @@ class _TopicEchoAggregator:
             'data_text': _stringify_echo_value(data_field),
             'received_at': timestamp,
         }
+        sample['data_rows'] = _build_echo_data_rows(data_field)
         with self._lock:
             self._count += 1
             self._last_received = timestamp
