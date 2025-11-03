@@ -1,63 +1,262 @@
 # ros2_graph
 
-Headless ROS 2 computation graph visualizer inspired by `rqt_graph`. It exposes the
-graph state in multiple textual formats (DOT/JSON/adjacency) while simultaneously
-hosting a lightweight web UI for interactive inspection—no Qt or extra Python
-packages required.
+`ros2_graph` is a headless ROS 2 graph inspector that ships with a zero-dependency web
+client. The node continuously samples the ROS graph, emits textual snapshots, and
+serves a richly interactive canvas where you can explore connectivity, inspect QoS,
+adjust parameters, and even call services without leaving the browser.
 
-## Package layout
+---
 
-| Path | Purpose |
-| --- | --- |
-| `ros2_graph/ros2_graph_node.py` | Main `rclpy` node that samples the ROS graph, prints it to stdout, and optionally serves it over HTTP. |
-| `ros2_graph/web/server.py` | Pure-stdlib HTTP server that serves JSON endpoints + static assets. |
-| `ros2_graph/web/static/*` | HTML/CSS/JS bundle for the browser canvas visualization. |
-| `resource/ros2_graph` & `setup.py` | Standard ament metadata and entry point (`ros2_graph = ros2_graph.ros2_graph_node:main`). |
+## Highlights
 
-## How it works
+- **Instant visualisation** – Pan/zoom the live ROS graph, with per-node overlays and
+  QoS-aware edge rendering.
+- **Actionable overlays** – Click a node to view details, edit parameters, or invoke
+  services using schema-aware forms.
+- **Topic tooling** – Right-click topics or edges for publisher/subscriber breakdowns
+  and on-demand traffic statistics.
+- **Stateless web stack** – The HTTP server is pure stdlib and exposes documented JSON
+  endpoints so you can plug in alternative front-ends or automation.
 
-1. `GraphBuilder` (inside `ros2_graph_node.py`) calls
-   `Node.get_topic_names_and_types()` along with publisher/subscription discovery
-   APIs to construct an immutable `GraphSnapshot` containing nodes, topics, and QoS
-   annotated edges.
-2. Each timer tick (default: `update_interval = 2.0s`) the node fingerprints the
-   snapshot; unchanged graphs are skipped.
-3. When the graph changes:
-   - The selected textual representation (`output_format = dot|json|adjacency`)
-     is printed to stdout (so you can pipe it to Graphviz, parse JSON, etc.).
-   - If the embedded HTTP server is enabled, the snapshot is serialized to JSON and
-     published to `/graph`, and the browser UI (`/`) renders it on a canvas.
+---
 
-## Parameters
+## Getting Started
 
-| Name | Default | Description |
-| --- | --- | --- |
-| `output_format` | `dot` | Format printed to stdout (`dot`, `json`, or `adjacency`). |
-| `update_interval` | `2.0` | Seconds between graph refresh attempts (min 0.1). |
-| `print_once` | `false` | When true, exit after emitting the first snapshot. |
-| `web_enable` | `true` | Start the built-in HTTP server + UI. |
-| `web_host` | `0.0.0.0` | Address for the HTTP server (use `127.0.0.1` to bind locally). |
-| `web_port` | `8734` | Port for the HTTP server. |
+### Requirements
 
-## Usage
+- ROS 2 Foxy or newer (rclpy, rosidl_runtime_py, rosidl_parser).
+- Ament build environment (`colcon`) if you build from source.
+- Graphviz `dot` (optional, used to compute layout hints for the browser).
+
+### Build & Launch
 
 ```bash
 colcon build --packages-select ros2_graph
 source install/setup.bash
-ros2 run ros2_graph ros2_graph \
-  --ros-args -p output_format:=json -p web_port:=9001
+
+# Run with the embedded web server enabled (default port 8734)
+ros2 run ros2_graph ros2_graph
 ```
 
-You'll see the chosen format printed to the terminal. Open
-`http://<web_host>:<web_port>/` (default `http://localhost:8734/`) in a browser to
-view the live canvas visualization. The `/graph` endpoint returns raw JSON for
-external tooling, and `/healthz` exposes a simple readiness probe.
+By default the node prints the graph as DOT to stdout and serves the UI at
+`http://localhost:8734/`. You can tweak behaviour via parameters:
 
-## Extending
+```bash
+ros2 run ros2_graph ros2_graph \
+  --ros-args \
+    -p output_format:=json \
+    -p update_interval:=1.0 \
+    -p web_host:=127.0.0.1 \
+    -p web_port:=9001
+```
 
-- `GraphSnapshot` centralizes serialization; add new renderers there if you need
-  alternative textual formats.
-- The web UI is self-contained in `ros2_graph/web/server.py`. Replace the embedded
-  HTML template with static files or add REST endpoints as needed.
-- Additional graph data (e.g., services, actions, node metadata) can flow through
-  the same snapshot+web mechanisms without touching the transport layers.
+---
+
+## Web UI Tour
+
+The client lives entirely in `ros2_graph/web/static`. Point your browser at the node and
+you’ll see a two-layer canvas (graph + overlay) and a status bar describing the latest
+interaction.
+
+### Canvas Basics
+
+- **Pan** – Click-and-drag anywhere that isn’t labelled to move the viewport.
+- **Zoom** – Use the mouse wheel or trackpad scroll. The view zooms around the cursor.
+- **Select** – Left-click a node or topic edge to highlight it. Selections persist so you
+  can compare relationships.
+- **Hover hints** – Move the mouse over nodes or edges to preview connections; the status
+  banner summarises the focused element.
+- **Context menu** – Right-click nodes or topics for actions (Info, Stats, Services,
+  Parameters). The menu anchors to your pointer.
+
+### Node & Topic Overlays
+
+- **Info (nodes/topics)** – Shows namespaces, endpoint counts, and recent metadata in a
+  floating card. The overlay tracks the node even if you pan the view.
+- **Topic Stats** – The UI requests a short-lived probe that subscribes for ~2.5 seconds
+  and returns message frequency and bandwidth estimates. Results are cached on the server
+  side to avoid redundant sampling.
+
+### Parameter Editor
+
+1. Right-click a node → **Parameters**.
+2. A table lists every declared parameter (name, value, type).
+3. **Single-click** any value to open the parameter editor.
+   - The modal pulls `DescribeParameters` so types, constraints, and descriptions are
+     displayed.
+   - Inputs are tailored to the type (booleans become toggles, numbers use numeric
+     fields, arrays expect JSON).
+4. Submit to call `set_parameter`. Success triggers an immediate refresh so you can see
+   the new value reflected in the table.
+
+### Service Caller
+
+1. Right-click a node → **Services**.
+2. Click a service row to open the service caller modal.
+   - The backend introspects the service type (`rosidl_parser` + `rosidl_runtime_py`)
+     and sends a schema that the UI turns into nested form fields.
+   - Arrays accept JSON. Complex sub-messages expand into grouped sections with their
+     own inputs.
+   - The modal shows an example request (when available) and caches the most recent
+     response for reference.
+3. Hit **Call** to invoke the service. The response is rendered as pretty-printed JSON.
+
+### Status & keyboard shortcuts
+
+- Status messages (beneath the header) explain what the UI is doing: fetching schemas,
+  applying updates, reporting errors, etc.
+- `Esc` closes open overlays or the context menu.
+
+---
+
+## Server ↔ Front-End Contract
+
+The web server lives in `ros2_graph/web/server.py`. It exposes a small REST surface that
+the bundled UI consumes, and you can reuse the same endpoints from your own client.
+
+### 1. Graph Snapshots
+
+`GET /graph`
+
+Returns the latest graph snapshot. Example:
+
+```json
+{
+  "fingerprint": "a1f72f...",
+  "generated_at": 1700000000.123,
+  "graph": {
+    "nodes": ["/talker", "/listener"],
+    "topics": {
+      "/chatter": ["std_msgs/msg/String"]
+    },
+    "edges": [
+      {"start": "/talker", "end": "/chatter", "qos": "RELIABLE/TRANSIENT_LOCAL"},
+      {"start": "/chatter", "end": "/listener", "qos": "RELIABLE/TRANSIENT_LOCAL"}
+    ]
+  },
+  "graphviz": {
+    "engine": "dot",
+    "plain": "graph 1 2 1 ...",            // optional plain-text layout dump
+    "ids": {"nodes": {"talker": "n0", "listener": "n1"}} // optional mapping
+  }
+}
+```
+
+### 2. Topic Tools
+
+`GET /topic_tool?action=<info|stats>&topic=/name[&peer=/node]`
+
+| Action | Response |
+| ------ | -------- |
+| `info` | `{"action":"info","topic":"/chatter","data":{"topic":"/chatter","types":["std_msgs/msg/String"],"publishers":[{"name":"/talker","qos":["RELIABLE"]}], "subscribers":[...]}}` |
+| `stats` | `{"action":"stats","topic":"/chatter","duration":2.5,"message_count":42,"average_hz":16.8,"average_bps":5120,"max_bytes":512,"cached":false}` |
+
+Errors use standard HTTP codes with an `{"error": "message"}` body. Topic statistics
+require `rosidl_runtime_py` to introspect message types.
+
+### 3. Node Tools
+
+All node tool requests include the node fully-qualified name (`node=/my_node`). Depending
+on the action you either use `GET` (for listings) or `POST` with a JSON body.
+
+#### Read-only actions (`GET /node_tool`)
+
+- `action=services` → `{"services":[{"name":"/my_node/reset","types":["std_srvs/srv/Empty"]}], ...}`
+- `action=parameters` → `{"parameters":[{"name":"/foo","type":"integer","type_id":2,"value":"42","raw_value":"42"}], ...}`
+
+#### Introspection actions (`POST /node_tool`)
+
+```jsonc
+// Describe parameter
+{
+  "action": "describe_parameter",
+  "node": "/camera",
+  "name": "exposure"
+}
+→ {
+  "parameter": {
+    "name": "exposure",
+    "type": "double",
+    "type_id": 3,
+    "descriptor": {
+      "description": "Exposure time in milliseconds",
+      "read_only": false,
+      "floating_point_ranges": [{"from_value": 0.0, "to_value": 33.0, "step": 0.1}]
+    }
+  }
+}
+
+// Describe service
+{
+  "action": "describe_service",
+  "node": "/camera",
+  "service": "/camera/set_info",
+  "type": "sensor_msgs/srv/SetCameraInfo"   // optional hint
+}
+→ {
+  "service": {
+    "name": "/camera/set_info",
+    "type": "sensor_msgs/srv/SetCameraInfo",
+    "types": ["sensor_msgs/srv/SetCameraInfo"],
+    "request": {
+      "fields": [
+        {"name":"camera_info","type":"sensor_msgs/msg/CameraInfo","is_array":false,"children":[...]},
+        ...
+      ],
+      "example": {"camera_info": {...}}
+    }
+  }
+}
+```
+
+Field descriptors mirror ROSIDL introspection:
+
+| Key | Meaning |
+| --- | ------- |
+| `name` | Slot name. |
+| `type` | Human-readable type string (supports nested sequences/arrays). |
+| `is_array` | `true` if the field is a fixed-size array or sequence. |
+| `array_size` / `max_size` | Bounds for arrays/sequences. |
+| `element_type` | Element type for arrays. |
+| `children` | Nested field descriptors for sub-messages. |
+| `default` | Default value taken from the default-constructed message. |
+
+#### State-changing actions (`POST /node_tool`)
+
+- **Set parameter**  
+  Body: `{"action":"set_parameter","node":"/camera","name":"exposure","type_id":3,"value":"12.5"}`  
+  Response: updated parameter echo or error.
+
+- **Call service**  
+  Body: `{"action":"call_service","node":"/camera","service":"/camera/set_info","request":{...}}`  
+  Response:  
+  `{"service":{"name":"/camera/set_info","type":"sensor_msgs/srv/SetCameraInfo"},"request":{...},"response":{...},"response_text":"{\\n  ...\\n}"}`.
+
+All responses use JSON; on failure you'll get an HTTP error code with an `error` field.
+
+---
+
+## Configuration Reference
+
+| Parameter | Default | Description |
+| --------- | ------- | ----------- |
+| `output_format` | `dot` | Format printed to stdout (`dot`, `json`, `adjacency`). |
+| `update_interval` | `2.0` | Seconds between graph samples (≥ 0.1). |
+| `print_once` | `false` | Exit after publishing the first snapshot. |
+| `web_enable` | `true` | Start the embedded HTTP server and web UI. |
+| `web_host` | `0.0.0.0` | Host interface for the server. |
+| `web_port` | `8734` | HTTP port. |
+| `parameter_service_timeout` | `5.0` | Timeout (seconds) for parameter/service RPCs. |
+
+---
+
+## Extending & Contributing
+
+- **Alternate clients** – Reuse the documented `/graph`, `/topic_tool`, and `/node_tool`
+  endpoints to build CLI wrappers or custom dashboards.
+- **Custom overlays** – The front-end is plain JavaScript; feel free to fork
+  `app.js` to add annotations, change styling, or integrate authentication.
+- **Server hooks** – New data can be threaded through `GraphSnapshot` and emitted via
+  `/graph` with minimal changes. The JSON contract is intentionally straightforward.
+
+Feel free to open issues or PRs with feature ideas, bug reports, or integration notes.
