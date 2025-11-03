@@ -184,8 +184,8 @@ textarea {
 
 .parameter-editor__dialog {
   position: relative;
-  width: min(480px, calc(100% - 2rem));
-  max-width: 520px;
+  width: min(640px, calc(100% - 2rem));
+  max-width: 720px;
   background: rgba(22, 27, 34, 0.98);
   border: 1px solid rgba(88, 166, 255, 0.35);
   border-radius: 12px;
@@ -263,6 +263,26 @@ textarea {
   white-space: pre-wrap;
 }
 
+.parameter-editor__group {
+  padding: 0.75rem 0.75rem 0.75rem 1rem;
+  border-left: 2px solid rgba(88, 166, 255, 0.3);
+  border-radius: 8px;
+  background: rgba(88, 166, 255, 0.05);
+  display: grid;
+  gap: 0.75rem;
+}
+
+.parameter-editor__group + .parameter-editor__group {
+  margin-top: 0.75rem;
+}
+
+.parameter-editor__group-title {
+  font-size: 0.85rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(230, 237, 243, 0.75);
+}
+
 .parameter-editor__current {
   padding: 0.5rem 0.6rem;
   border-radius: 6px;
@@ -297,6 +317,42 @@ textarea {
 .parameter-editor__message.error {
   color: #ff7b72;
   opacity: 1;
+}
+
+.parameter-editor__response {
+  margin: 0;
+  padding: 0.75rem;
+  border-radius: 8px;
+  background: rgba(88, 166, 255, 0.05);
+  border: 1px solid rgba(88, 166, 255, 0.2);
+  display: grid;
+  gap: 0.5rem;
+}
+
+.parameter-editor__response.hidden {
+  display: none;
+}
+
+.parameter-editor__response h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(230, 237, 243, 0.82);
+}
+
+.parameter-editor__response pre {
+  margin: 0;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  background: rgba(13, 17, 23, 0.85);
+  border-radius: 6px;
+  padding: 0.75rem;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .parameter-editor__actions {
