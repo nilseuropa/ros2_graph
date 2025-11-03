@@ -100,6 +100,61 @@ const parameterEditorState = {
   metadataWarning: null,
 };
 
+const serviceCaller = document.getElementById('serviceCaller');
+const serviceCallerForm = document.getElementById('serviceCallerForm');
+const serviceCallerTitle = document.getElementById('serviceCallerTitle');
+const serviceCallerSubtitle = document.getElementById('serviceCallerSubtitle');
+const serviceCallerBody = document.getElementById('serviceCallerBody');
+const serviceCallerMessage = document.getElementById('serviceCallerMessage');
+const serviceCallerClose = document.getElementById('serviceCallerClose');
+const serviceCallerCancel = document.getElementById('serviceCallerCancel');
+const serviceCallerInvoke = document.getElementById('serviceCallerInvoke');
+const serviceCallerExample = document.getElementById('serviceCallerExample');
+const serviceCallerExampleText = document.getElementById('serviceCallerExampleText');
+const serviceCallerResponse = document.getElementById('serviceCallerResponse');
+const serviceCallerResponseText = document.getElementById('serviceCallerResponseText');
+const serviceCallerBackdrop = serviceCaller?.querySelector('.parameter-editor__backdrop');
+
+const serviceCallerState = {
+  visible: false,
+  nodeName: '',
+  serviceName: '',
+  serviceType: '',
+  availableTypes: [],
+  inputs: [],
+  submitting: false,
+  warning: null,
+  example: null,
+};
+
+let serviceFieldIdCounter = 0;
+
+const SERVICE_BOOLEAN_TYPES = new Set(['bool', 'boolean']);
+const SERVICE_INTEGER_TYPES = new Set([
+  'int8',
+  'uint8',
+  'int16',
+  'uint16',
+  'int32',
+  'uint32',
+  'int64',
+  'uint64',
+  'byte',
+  'char',
+]);
+const SERVICE_FLOAT_TYPES = new Set(['float', 'float32', 'double', 'float64']);
+const SERVICE_STRING_TYPES = new Set(['string', 'wstring']);
+const SERVICE_INTEGER_LIMITS = {
+  int8: { min: -128, max: 127 },
+  uint8: { min: 0, max: 255 },
+  int16: { min: -32768, max: 32767 },
+  uint16: { min: 0, max: 65535 },
+  int32: { min: -2147483648, max: 2147483647 },
+  uint32: { min: 0, max: 4294967295 },
+  byte: { min: 0, max: 255 },
+  char: { min: 0, max: 255 },
+};
+
 function setOverlayPointerCapture(enabled) {
   if (!overlayCanvas) {
     return;
@@ -181,8 +236,8 @@ function updateOverlayHoverPosition(x, y) {
     }
   }
   if (overlayCanvas) {
-    const parameterIndex = findParameterRowIndexAtPosition(x, y);
-    overlayCanvas.style.cursor = parameterIndex !== null ? 'pointer' : 'default';
+    const targetInfo = findActionableOverlayTarget(x, y);
+    overlayCanvas.style.cursor = targetInfo ? 'pointer' : 'default';
   }
   setOverlayHover(hover);
 }
@@ -249,10 +304,44 @@ if (parameterEditor) {
     }
   });
 }
-document.addEventListener('keydown', event => {
-  if (event.key === 'Escape' && parameterEditorState.visible && !parameterEditorState.submitting) {
+
+if (serviceCallerForm) {
+  serviceCallerForm.addEventListener('submit', handleServiceCallerSubmit);
+}
+if (serviceCallerCancel) {
+  serviceCallerCancel.addEventListener('click', event => {
     event.preventDefault();
-    closeParameterEditor();
+    closeServiceCaller();
+  });
+}
+if (serviceCallerClose) {
+  serviceCallerClose.addEventListener('click', event => {
+    event.preventDefault();
+    closeServiceCaller();
+  });
+}
+if (serviceCaller) {
+  serviceCaller.addEventListener('click', event => {
+    if (
+      !serviceCallerState.submitting &&
+      (event.target === serviceCaller || event.target === serviceCallerBackdrop)
+    ) {
+      closeServiceCaller();
+    }
+  });
+}
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    if (parameterEditorState.visible && !parameterEditorState.submitting) {
+      event.preventDefault();
+      closeParameterEditor();
+      return;
+    }
+    if (serviceCallerState.visible && !serviceCallerState.submitting) {
+      event.preventDefault();
+      closeServiceCaller();
+    }
   }
 });
 const canvasContainer = document.getElementById('canvasContainer');
@@ -718,17 +807,22 @@ function handleOverlayPointerDown(event) {
   }
 }
 
-function findParameterRowIndexAtPosition(x, y) {
-  const parameterEntries = overlayState.table?.context?.parameters;
-  if (!Array.isArray(parameterEntries) || parameterEntries.length === 0) {
-    return null;
-  }
+function findActionableOverlayTarget(x, y) {
   const tables = Array.isArray(overlayState.layout?.tables) ? overlayState.layout.tables : [];
-  const dataTables = Array.isArray(overlayState.table.tables) ? overlayState.table.tables : [];
+  const dataTables = Array.isArray(overlayState.table?.tables) ? overlayState.table.tables : [];
   if (!tables.length || !dataTables.length) {
     return null;
   }
-  let rowOffset = 0;
+  const parameterEntries = Array.isArray(overlayState.table?.context?.parameters)
+    ? overlayState.table.context.parameters
+    : [];
+  const serviceEntries = Array.isArray(overlayState.table?.context?.services)
+    ? overlayState.table.context.services
+    : [];
+
+  let parameterOffset = 0;
+  let serviceOffset = 0;
+
   for (let tableIndex = 0; tableIndex < tables.length; tableIndex += 1) {
     const layout = tables[tableIndex];
     const tableData = dataTables[tableIndex];
@@ -736,33 +830,46 @@ function findParameterRowIndexAtPosition(x, y) {
       continue;
     }
     const headers = Array.isArray(tableData.headers) ? tableData.headers : [];
-    const isParameterTable =
-      headers.length >= 2 &&
-      String(headers[0]).toLowerCase() === 'name' &&
-      String(headers[1]).toLowerCase() === 'value';
-    if (!isParameterTable) {
-      continue;
-    }
-    const columnBounds = Array.isArray(layout.columnBounds) ? layout.columnBounds : [];
-    const valueBounds = columnBounds[1];
+    const header0 = headers[0] ? String(headers[0]).toLowerCase() : '';
+    const header1 = headers[1] ? String(headers[1]).toLowerCase() : '';
+    const isParameterTable = header0 === 'name' && header1 === 'value';
+    const isServiceTable = header0 === 'service' && header1 === 'type';
     const rowRects = Array.isArray(layout.rows) ? layout.rows : [];
-    const rowCount = rowRects.length;
-    if (!valueBounds || x < valueBounds.start || x > valueBounds.end) {
-      rowOffset += rowCount;
+
+    if (isParameterTable) {
+      const columnBounds = Array.isArray(layout.columnBounds) ? layout.columnBounds : [];
+      const valueBounds = columnBounds[1];
+      if (valueBounds && x >= valueBounds.start && x <= valueBounds.end) {
+        for (let rowIndex = 0; rowIndex < rowRects.length; rowIndex += 1) {
+          const rowRect = rowRects[rowIndex];
+          if (pointInRect(x, y, rowRect)) {
+            const entryIndex = parameterOffset + rowIndex;
+            if (entryIndex >= 0 && entryIndex < parameterEntries.length) {
+              return { kind: 'parameter', index: entryIndex };
+            }
+            return null;
+          }
+        }
+      }
+      parameterOffset += rowRects.length;
       continue;
     }
-    for (let rowIndex = 0; rowIndex < rowRects.length; rowIndex += 1) {
-      const rowRect = rowRects[rowIndex];
-      if (pointInRect(x, y, rowRect)) {
-        const entryIndex = rowOffset + rowIndex;
-        if (entryIndex >= 0 && entryIndex < parameterEntries.length) {
-          return entryIndex;
+
+    if (isServiceTable) {
+      for (let rowIndex = 0; rowIndex < rowRects.length; rowIndex += 1) {
+        const rowRect = rowRects[rowIndex];
+        if (pointInRect(x, y, rowRect)) {
+          const entryIndex = serviceOffset + rowIndex;
+          if (entryIndex >= 0 && entryIndex < serviceEntries.length) {
+            return { kind: 'service', index: entryIndex };
+          }
+          return null;
         }
-        return null;
       }
+      serviceOffset += rowRects.length;
     }
-    rowOffset += rowCount;
   }
+
   return null;
 }
 
@@ -1234,6 +1341,606 @@ async function handleParameterEditorSubmit(event) {
   }
 }
 
+function updateServiceCallerMessage(text, isError = false) {
+  if (!serviceCallerMessage) {
+    return;
+  }
+  serviceCallerMessage.textContent = text || '';
+  serviceCallerMessage.classList.toggle('error', Boolean(isError && text));
+}
+
+function setServiceCallerBusy(isBusy) {
+  if (serviceCallerInvoke) {
+    serviceCallerInvoke.disabled = Boolean(isBusy);
+  }
+  if (serviceCallerCancel) {
+    serviceCallerCancel.disabled = Boolean(isBusy);
+  }
+  if (serviceCallerClose) {
+    serviceCallerClose.disabled = Boolean(isBusy);
+  }
+}
+
+function resetServiceCallerState() {
+  serviceCallerState.visible = false;
+  serviceCallerState.nodeName = '';
+  serviceCallerState.serviceName = '';
+  serviceCallerState.serviceType = '';
+  serviceCallerState.availableTypes = [];
+  serviceCallerState.inputs = [];
+  serviceCallerState.submitting = false;
+  serviceCallerState.warning = null;
+  serviceCallerState.example = null;
+  serviceFieldIdCounter = 0;
+}
+
+function clearServiceCallerResponse() {
+  if (serviceCallerResponse) {
+    serviceCallerResponse.classList.add('hidden');
+  }
+  if (serviceCallerResponseText) {
+    serviceCallerResponseText.textContent = '';
+  }
+}
+
+function updateServiceCallerExample(example) {
+  if (!serviceCallerExample || !serviceCallerExampleText) {
+    return;
+  }
+  if (example === null || example === undefined) {
+    serviceCallerExample.classList.add('hidden');
+    serviceCallerExampleText.textContent = '';
+    return;
+  }
+  let exampleText = '';
+  try {
+    exampleText = JSON.stringify(example, null, 2);
+  } catch (err) {
+    exampleText = String(example);
+  }
+  const trimmed = exampleText.trim();
+  if (!trimmed.length || trimmed === '{}' || trimmed === '[]') {
+    serviceCallerExample.classList.add('hidden');
+    serviceCallerExampleText.textContent = '';
+    return;
+  }
+  serviceCallerExampleText.textContent = exampleText;
+  serviceCallerExample.classList.remove('hidden');
+}
+
+function closeServiceCaller() {
+  if (!serviceCallerState.visible) {
+    resetServiceCallerState();
+    return;
+  }
+  if (serviceCallerState.submitting) {
+    return;
+  }
+  if (serviceCaller) {
+    serviceCaller.classList.add('hidden');
+    serviceCaller.classList.remove('active');
+    serviceCaller.setAttribute('aria-hidden', 'true');
+  }
+  if (serviceCallerBody) {
+    serviceCallerBody.innerHTML = '';
+  }
+  updateServiceCallerMessage('');
+  clearServiceCallerResponse();
+  updateServiceCallerExample(null);
+  setServiceCallerBusy(false);
+  resetServiceCallerState();
+}
+
+function buildServiceField(field, path) {
+  const inputs = [];
+  const fieldName = typeof field?.name === 'string' ? field.name : '';
+  const typeLabel = typeof field?.type === 'string' ? field.type : '';
+  const baseTypeRaw = typeof field?.base_type === 'string' ? field.base_type : typeLabel;
+  const baseType = (baseTypeRaw || '').toLowerCase();
+  const defaultValue = field?.default;
+  const fullPath = path.concat(fieldName);
+
+  if (!field.is_array && Array.isArray(field?.children) && field.children.length) {
+    const group = document.createElement('div');
+    group.className = 'parameter-editor__group';
+    const title = document.createElement('div');
+    title.className = 'parameter-editor__group-title';
+    title.textContent = `${fieldName || '(field)'}${typeLabel ? ` (${typeLabel})` : ''}`;
+    group.append(title);
+    field.children.forEach(child => {
+      const built = buildServiceField(child, fullPath);
+      group.append(built.element);
+      inputs.push(...built.inputs);
+    });
+    if (!field.children.length) {
+      group.append(createHintElement('No sub-fields defined.'));
+    }
+    return { element: group, inputs };
+  }
+
+  serviceFieldIdCounter += 1;
+  const inputId = `serviceField-${serviceFieldIdCounter}`;
+
+  if (field.is_array) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'parameter-editor__field';
+    const label = document.createElement('label');
+    label.setAttribute('for', inputId);
+    label.textContent = `${fieldName || '(array)'}${typeLabel ? ` (${typeLabel})` : ''}`;
+    wrapper.append(label);
+
+    const textarea = document.createElement('textarea');
+    textarea.id = inputId;
+    textarea.autocomplete = 'off';
+    textarea.spellcheck = false;
+    textarea.rows = 6;
+    const fallbackArray = Array.isArray(defaultValue) ? defaultValue : [];
+    try {
+      textarea.value = JSON.stringify(fallbackArray, null, 2);
+    } catch (err) {
+      textarea.value = '[]';
+    }
+    wrapper.append(textarea);
+
+    const hintParts = [`JSON array of ${field.element_type || typeLabel || 'values'}`];
+    if (field.array_size) {
+      hintParts.push(`Fixed length ${field.array_size}`);
+    } else if (field.max_size) {
+      hintParts.push(`Maximum length ${field.max_size}`);
+    }
+    wrapper.append(createHintElement(hintParts.join(' • ')));
+
+    inputs.push({
+      path: fullPath,
+      getValue: () => {
+        const raw = textarea.value.trim();
+        if (!raw.length) {
+          try {
+            return { value: JSON.parse(JSON.stringify(fallbackArray)) };
+          } catch (err) {
+            return { value: fallbackArray.slice() };
+          }
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          if (!Array.isArray(parsed)) {
+            return { error: 'Value must be a JSON array' };
+          }
+          return { value: parsed };
+        } catch (err) {
+          return { error: 'Value must be a valid JSON array' };
+        }
+      },
+      focus: () => textarea.focus(),
+    });
+
+    return { element: wrapper, inputs };
+  }
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'parameter-editor__field';
+  const label = document.createElement('label');
+  label.setAttribute('for', inputId);
+  label.textContent = `${fieldName || '(field)'}${typeLabel ? ` (${typeLabel})` : ''}`;
+  wrapper.append(label);
+
+  if (SERVICE_BOOLEAN_TYPES.has(baseType)) {
+    const toggleWrapper = document.createElement('label');
+    toggleWrapper.className = 'parameter-editor__toggle';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = inputId;
+    checkbox.checked = Boolean(defaultValue);
+    const toggleText = document.createElement('span');
+    const updateToggleText = () => {
+      toggleText.textContent = checkbox.checked ? 'True' : 'False';
+    };
+    updateToggleText();
+    checkbox.addEventListener('change', updateToggleText);
+    toggleWrapper.append(checkbox, toggleText);
+    wrapper.append(toggleWrapper);
+    wrapper.append(createHintElement('Type: boolean'));
+    inputs.push({
+      path: fullPath,
+      getValue: () => ({ value: checkbox.checked }),
+      focus: () => checkbox.focus(),
+    });
+    return { element: wrapper, inputs };
+  }
+
+  if (SERVICE_INTEGER_TYPES.has(baseType)) {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.id = inputId;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.step = '1';
+    if (defaultValue !== undefined && defaultValue !== null) {
+      input.value = String(defaultValue);
+    }
+    const limits = SERVICE_INTEGER_LIMITS[baseType];
+    if (limits) {
+      if (Number.isFinite(limits.min)) {
+        input.min = String(limits.min);
+      }
+      if (Number.isFinite(limits.max)) {
+        input.max = String(limits.max);
+      }
+    }
+    wrapper.append(input);
+    const hintParts = [`Type: ${typeLabel || baseType}`];
+    if (limits) {
+      hintParts.push(`Range: ${limits.min} – ${limits.max}`);
+    }
+    wrapper.append(createHintElement(hintParts.join(' • ')));
+    inputs.push({
+      path: fullPath,
+      getValue: () => {
+        const raw = input.value.trim();
+        if (!raw.length) {
+          if (defaultValue !== undefined && defaultValue !== null) {
+            return { value: Number(defaultValue) };
+          }
+          return { value: 0 };
+        }
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed)) {
+          return { error: 'Enter a valid number' };
+        }
+        if (!Number.isInteger(parsed)) {
+          return { error: 'Enter a whole number' };
+        }
+        if (limits) {
+          if (parsed < limits.min || parsed > limits.max) {
+            return { error: `Value must be between ${limits.min} and ${limits.max}` };
+          }
+        }
+        return { value: parsed };
+      },
+      focus: () => input.focus(),
+    });
+    return { element: wrapper, inputs };
+  }
+
+  if (SERVICE_FLOAT_TYPES.has(baseType)) {
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.id = inputId;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.step = 'any';
+    if (defaultValue !== undefined && defaultValue !== null) {
+      input.value = String(defaultValue);
+    }
+    wrapper.append(input);
+    wrapper.append(createHintElement(`Type: ${typeLabel || baseType}`));
+    inputs.push({
+      path: fullPath,
+      getValue: () => {
+        const raw = input.value.trim();
+        if (!raw.length) {
+          if (defaultValue !== undefined && defaultValue !== null) {
+            return { value: Number(defaultValue) };
+          }
+          return { value: 0 };
+        }
+        const parsed = Number(raw);
+        if (!Number.isFinite(parsed)) {
+          return { error: 'Enter a valid number' };
+        }
+        return { value: parsed };
+      },
+      focus: () => input.focus(),
+    });
+    return { element: wrapper, inputs };
+  }
+
+  if (SERVICE_STRING_TYPES.has(baseType)) {
+    const fallback = defaultValue !== undefined && defaultValue !== null ? String(defaultValue) : '';
+    const useTextarea = fallback.includes('\n') || fallback.length > 120;
+    const input = useTextarea ? document.createElement('textarea') : document.createElement('input');
+    input.id = inputId;
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    if (useTextarea) {
+      input.rows = Math.min(Math.max(fallback.split('\n').length, 3), 12);
+    }
+    input.value = fallback;
+    wrapper.append(input);
+    wrapper.append(createHintElement(`Type: ${typeLabel || baseType}`));
+    inputs.push({
+      path: fullPath,
+      getValue: () => {
+        const raw = input.value;
+        if (!raw.length) {
+          return { value: fallback };
+        }
+        return { value: raw };
+      },
+      focus: () => input.focus(),
+    });
+    return { element: wrapper, inputs };
+  }
+
+  const textarea = document.createElement('textarea');
+  textarea.id = inputId;
+  textarea.autocomplete = 'off';
+  textarea.spellcheck = false;
+  textarea.rows = 6;
+  const fallbackObject = defaultValue && typeof defaultValue === 'object' && !Array.isArray(defaultValue)
+    ? defaultValue
+    : {};
+  try {
+    textarea.value = JSON.stringify(fallbackObject, null, 2);
+  } catch (err) {
+    textarea.value = '{}';
+  }
+  wrapper.append(textarea);
+  wrapper.append(createHintElement('Value must be a JSON object.'));
+  inputs.push({
+    path: fullPath,
+    getValue: () => {
+      const raw = textarea.value.trim();
+      if (!raw.length) {
+        try {
+          return { value: JSON.parse(JSON.stringify(fallbackObject)) };
+        } catch (err) {
+          return { value: { ...fallbackObject } };
+        }
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          return { error: 'Value must be a JSON object' };
+        }
+        return { value: parsed };
+      } catch (err) {
+        return { error: 'Value must be a valid JSON object' };
+      }
+    },
+    focus: () => textarea.focus(),
+  });
+
+  return { element: wrapper, inputs };
+}
+
+function openServiceCaller(nodeName, entry, detail, warningMessage) {
+  if (!serviceCaller) {
+    return;
+  }
+
+  serviceFieldIdCounter = 0;
+  serviceCallerState.visible = true;
+  serviceCallerState.nodeName = nodeName;
+  serviceCallerState.serviceName = typeof entry?.name === 'string' ? entry.name : '';
+  const advertisedTypes = Array.isArray(detail?.types)
+    ? detail.types
+    : Array.isArray(entry?.types)
+    ? entry.types
+    : [];
+  serviceCallerState.availableTypes = advertisedTypes.map(type => String(type));
+  serviceCallerState.serviceType = String(detail?.type || serviceCallerState.availableTypes[0] || '');
+  serviceCallerState.inputs = [];
+  serviceCallerState.submitting = false;
+  serviceCallerState.warning = warningMessage || null;
+  serviceCallerState.example = detail?.request?.example ?? null;
+
+  if (serviceCallerTitle) {
+    serviceCallerTitle.textContent = serviceCallerState.serviceName || 'Service';
+  }
+  if (serviceCallerSubtitle) {
+    const subtitleParts = [`Node: ${nodeName}`];
+    if (serviceCallerState.serviceType) {
+      subtitleParts.push(`Type: ${serviceCallerState.serviceType}`);
+    }
+    if (serviceCallerState.availableTypes.length > 1) {
+      subtitleParts.push(`(${serviceCallerState.availableTypes.length} variants)`);
+    }
+    serviceCallerSubtitle.textContent = subtitleParts.join(' • ');
+  }
+
+  if (serviceCallerBody) {
+    serviceCallerBody.innerHTML = '';
+    if (serviceCallerState.availableTypes.length > 1) {
+      serviceCallerBody.append(
+        createHintElement(`Additional types: ${serviceCallerState.availableTypes.join(', ')}`),
+      );
+    }
+    const requestFields = Array.isArray(detail?.request?.fields) ? detail.request.fields : [];
+    if (!requestFields.length) {
+      serviceCallerBody.append(
+        createHintElement('This service has no request fields. A call will send an empty request.'),
+      );
+    } else {
+      requestFields.forEach(field => {
+        const built = buildServiceField(field, []);
+        serviceCallerBody.append(built.element);
+        serviceCallerState.inputs.push(...built.inputs);
+      });
+    }
+  }
+
+  clearServiceCallerResponse();
+  updateServiceCallerExample(serviceCallerState.example);
+  setServiceCallerBusy(false);
+
+  const requestFields = Array.isArray(detail?.request?.fields) ? detail.request.fields : [];
+  if (warningMessage) {
+    updateServiceCallerMessage(`Metadata limited: ${warningMessage}`);
+  } else if (!requestFields.length) {
+    updateServiceCallerMessage('Press Call to invoke this service with an empty request.');
+  } else {
+    updateServiceCallerMessage('Provide request values, then press Call to invoke the service.');
+  }
+
+  if (serviceCaller) {
+    serviceCaller.classList.remove('hidden');
+    serviceCaller.classList.add('active');
+    serviceCaller.setAttribute('aria-hidden', 'false');
+  }
+
+  const focusTarget = serviceCallerState.inputs.length
+    ? serviceCallerState.inputs[0]
+    : null;
+  if (focusTarget && typeof focusTarget.focus === 'function') {
+    setTimeout(() => focusTarget.focus(), 0);
+  } else if (serviceCallerInvoke) {
+    setTimeout(() => serviceCallerInvoke.focus(), 0);
+  }
+}
+
+function assignNestedValue(target, path, value) {
+  if (!path.length) {
+    return;
+  }
+  let cursor = target;
+  for (let index = 0; index < path.length - 1; index += 1) {
+    const key = path[index];
+    if (cursor[key] === undefined || cursor[key] === null || typeof cursor[key] !== 'object') {
+      cursor[key] = {};
+    }
+    cursor = cursor[key];
+  }
+  cursor[path[path.length - 1]] = value;
+}
+
+function collectServiceRequestPayload() {
+  if (!serviceCallerState.inputs.length) {
+    return { value: {} };
+  }
+  const request = {};
+  for (const entry of serviceCallerState.inputs) {
+    const result = entry.getValue();
+    if (!result || typeof result !== 'object') {
+      return {
+        error: 'Unable to read form values.',
+        focus: entry.focus,
+      };
+    }
+    if (result.error) {
+      return {
+        error: String(result.error),
+        focus: entry.focus,
+      };
+    }
+    assignNestedValue(request, entry.path, result.value);
+  }
+  return { value: request };
+}
+
+function showServiceCallerResponse(responseText) {
+  if (!serviceCallerResponse || !serviceCallerResponseText) {
+    return;
+  }
+  serviceCallerResponseText.textContent = responseText || '';
+  serviceCallerResponse.classList.remove('hidden');
+}
+
+async function handleServiceCallerSubmit(event) {
+  event.preventDefault();
+  if (!serviceCallerState.visible || serviceCallerState.submitting) {
+    return;
+  }
+
+  const buildResult = collectServiceRequestPayload();
+  if (!buildResult || typeof buildResult !== 'object') {
+    updateServiceCallerMessage('Unable to prepare request payload.', true);
+    return;
+  }
+  if (buildResult.error) {
+    updateServiceCallerMessage(String(buildResult.error), true);
+    if (buildResult.focus && typeof buildResult.focus === 'function') {
+      buildResult.focus();
+    }
+    return;
+  }
+
+  const requestPayload = buildResult.value || {};
+  clearServiceCallerResponse();
+  serviceCallerState.submitting = true;
+  setServiceCallerBusy(true);
+  updateServiceCallerMessage(`Calling ${serviceCallerState.serviceName}…`);
+
+  try {
+    const payload = await requestNodeTool('call_service', serviceCallerState.nodeName, {
+      method: 'POST',
+      body: {
+        service: serviceCallerState.serviceName,
+        type: serviceCallerState.serviceType,
+        request: requestPayload,
+      },
+    });
+    if (payload?.service?.type) {
+      serviceCallerState.serviceType = String(payload.service.type);
+    }
+    const responseText = payload?.response_text
+      ? String(payload.response_text)
+      : (() => {
+          try {
+            return JSON.stringify(payload?.response ?? {}, null, 2);
+          } catch (err) {
+            return String(payload?.response ?? '');
+          }
+        })();
+    showServiceCallerResponse(responseText);
+    const successType = serviceCallerState.serviceType ? ` (${serviceCallerState.serviceType})` : '';
+    updateServiceCallerMessage(`Service call succeeded${successType}.`);
+    statusEl.textContent = `Service ${serviceCallerState.serviceName} on ${serviceCallerState.nodeName} responded${successType}.`;
+  } catch (err) {
+    const message = err?.message || String(err);
+    updateServiceCallerMessage(`Failed to call service: ${message}`, true);
+    statusEl.textContent = `Failed to call ${serviceCallerState.serviceName} on ${serviceCallerState.nodeName}: ${message}`;
+  } finally {
+    serviceCallerState.submitting = false;
+    setServiceCallerBusy(false);
+  }
+}
+
+async function editService(rowIndex) {
+  const nodeName = overlayState.nodeName;
+  const services = overlayState.table?.context?.services;
+  if (!nodeName || !Array.isArray(services) || rowIndex < 0 || rowIndex >= services.length) {
+    return;
+  }
+  const entry = services[rowIndex] || {};
+  const serviceName = typeof entry.name === 'string' ? entry.name : '';
+  const typeList = Array.isArray(entry.types)
+    ? entry.types
+    : entry.types
+    ? [entry.types]
+    : [];
+  const serviceTypeHint = typeList.length ? String(typeList[0]) : '';
+  if (!serviceName) {
+    statusEl.textContent = 'Unable to resolve service name for selection.';
+    return;
+  }
+
+  statusEl.textContent = `Fetching service schema for ${serviceName} on ${nodeName}…`;
+  let detail = null;
+  try {
+    const payload = await requestNodeTool('describe_service', nodeName, {
+      method: 'POST',
+      body: {
+        service: serviceName,
+        type: serviceTypeHint,
+      },
+    });
+    detail = payload?.service;
+  } catch (err) {
+    const message = err?.message || String(err);
+    statusEl.textContent = `Failed to describe ${serviceName} on ${nodeName}: ${message}`;
+    return;
+  }
+
+  if (!detail || typeof detail !== 'object') {
+    statusEl.textContent = `Service description unavailable for ${serviceName}.`;
+    return;
+  }
+
+  openServiceCaller(nodeName, entry, detail, null);
+  statusEl.textContent = `Ready to call ${serviceName} on ${nodeName}`;
+}
+
 function handleOverlayDoubleClick(event) {
   if (!overlayCanvas) {
     return;
@@ -1250,12 +1957,16 @@ function handleOverlayDoubleClick(event) {
   const scaleY = overlayCanvas.height / rect.height;
   const x = (event.clientX - rect.left) * scaleX;
   const y = (event.clientY - rect.top) * scaleY;
-  const parameterIndex = findParameterRowIndexAtPosition(x, y);
-  if (parameterIndex === null) {
+  const targetInfo = findActionableOverlayTarget(x, y);
+  if (!targetInfo) {
     return;
   }
   event.preventDefault();
-  void editParameterValue(parameterIndex);
+  if (targetInfo.kind === 'parameter') {
+    void editParameterValue(targetInfo.index);
+  } else if (targetInfo.kind === 'service') {
+    void editService(targetInfo.index);
+  }
 }
 
 async function editParameterValue(rowIndex) {
@@ -1794,6 +2505,9 @@ function showNodeServicesOverlay(nodeName, payload) {
           rows,
         },
       ],
+      context: {
+        services: Array.isArray(payload.services) ? payload.services : [],
+      },
     });
   }
   statusEl.textContent = `Services for ${nodeName}: ${count} found`;
@@ -3449,6 +4163,9 @@ function handleDoubleClick(event) {
 
 function handleKeyDown(event) {
   if (event.key === 'Escape') {
+    if (parameterEditorState.visible || serviceCallerState.visible) {
+      return;
+    }
     hideOverlay();
     hideContextMenu();
   }

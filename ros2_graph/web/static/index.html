@@ -37,6 +37,34 @@
       </footer>
     </form>
   </div>
+  <div id="serviceCaller" class="parameter-editor hidden" aria-hidden="true">
+    <div class="parameter-editor__backdrop"></div>
+    <form id="serviceCallerForm" class="parameter-editor__dialog" role="dialog" aria-modal="true" aria-labelledby="serviceCallerTitle">
+      <header class="parameter-editor__header">
+        <div>
+          <h2 id="serviceCallerTitle">Service</h2>
+          <p id="serviceCallerSubtitle" class="parameter-editor__subtitle"></p>
+        </div>
+        <button type="button" id="serviceCallerClose" class="parameter-editor__icon-btn" aria-label="Close service caller">×</button>
+      </header>
+      <section id="serviceCallerBody" class="parameter-editor__body"></section>
+      <section id="serviceCallerExample" class="parameter-editor__response hidden" aria-live="polite">
+        <h3>Example Request</h3>
+        <pre id="serviceCallerExampleText"></pre>
+      </section>
+      <section id="serviceCallerResponse" class="parameter-editor__response hidden" aria-live="polite">
+        <h3>Last Response</h3>
+        <pre id="serviceCallerResponseText"></pre>
+      </section>
+      <footer class="parameter-editor__footer">
+        <div id="serviceCallerMessage" class="parameter-editor__message"></div>
+        <div class="parameter-editor__actions">
+          <button type="submit" id="serviceCallerInvoke">Call</button>
+          <button type="button" id="serviceCallerCancel" class="secondary">Cancel</button>
+        </div>
+      </footer>
+    </form>
+  </div>
   <div id="footer">Data source: /graph endpoint (refresh every 2s)</div>
   <script src="/app.js" type="module"></script>
 </body>

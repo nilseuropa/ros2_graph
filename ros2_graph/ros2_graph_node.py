@@ -28,6 +28,19 @@ except ImportError:  # pragma: no cover - allows docs/tests without ROS deps
     ListParameters = None  # type: ignore[assignment]
     SetParameters = None  # type: ignore[assignment]
 
+try:
+    from rosidl_parser.definition import (  # type: ignore[attr-defined]
+        AbstractSequence,
+        Array,
+        BasicType,
+        NamespacedType,
+    )
+except ImportError:  # pragma: no cover - optional dependency for service description
+    AbstractSequence = None  # type: ignore[assignment]
+    Array = None  # type: ignore[assignment]
+    BasicType = None  # type: ignore[assignment]
+    NamespacedType = None  # type: ignore[assignment]
+
 PARAMETER_NOT_SET = getattr(ParameterType, 'PARAMETER_NOT_SET', 0)
 PARAMETER_BOOL = getattr(ParameterType, 'PARAMETER_BOOL', 1)
 PARAMETER_INTEGER = getattr(ParameterType, 'PARAMETER_INTEGER', 2)
@@ -509,6 +522,166 @@ def _parameter_descriptor_to_dict(descriptor) -> Optional[Dict[str, object]]:
     return data
 
 
+def _rosidl_slot_type_to_string(slot_type) -> str:
+    if Array is not None and isinstance(slot_type, Array):
+        inner = _rosidl_slot_type_to_string(slot_type.value_type)
+        return f'array<{inner}, {slot_type.size}>'
+    if AbstractSequence is not None and isinstance(slot_type, AbstractSequence):
+        inner = _rosidl_slot_type_to_string(slot_type.value_type)
+        max_size = getattr(slot_type, 'maximum_size', None)
+        if max_size is not None and max_size > 0:
+            return f'sequence<{inner}, {max_size}>'
+        return f'sequence<{inner}>'
+    if BasicType is not None and isinstance(slot_type, BasicType):
+        return slot_type.typename
+    if NamespacedType is not None and isinstance(slot_type, NamespacedType):
+        return '/'.join((*slot_type.names, slot_type.name))
+    return str(slot_type)
+
+
+def _rosidl_slot_is_basic(slot_type) -> bool:
+    return BasicType is not None and isinstance(slot_type, BasicType)
+
+
+def _rosidl_slot_is_array(slot_type) -> bool:
+    if Array is not None and isinstance(slot_type, Array):
+        return True
+    if AbstractSequence is not None and isinstance(slot_type, AbstractSequence):
+        return True
+    return False
+
+
+def _rosidl_slot_value_type(slot_type):
+    if Array is not None and isinstance(slot_type, Array):
+        return slot_type.value_type
+    if AbstractSequence is not None and isinstance(slot_type, AbstractSequence):
+        return slot_type.value_type
+    return None
+
+
+def _rosidl_slot_array_size(slot_type) -> Optional[int]:
+    if Array is not None and isinstance(slot_type, Array):
+        return int(getattr(slot_type, 'size', 0)) or 0
+    return None
+
+
+def _rosidl_slot_maximum_size(slot_type) -> Optional[int]:
+    if Array is not None and isinstance(slot_type, Array):
+        return int(getattr(slot_type, 'size', 0)) or 0
+    if AbstractSequence is not None and isinstance(slot_type, AbstractSequence):
+        maximum = getattr(slot_type, 'maximum_size', None)
+        if maximum is not None and maximum > 0:
+            return int(maximum)
+    return None
+
+
+def _get_message_class_for_slot(slot_type):
+    if NamespacedType is None or not isinstance(slot_type, NamespacedType):
+        return None
+    try:
+        from rosidl_runtime_py.utilities import get_message  # type: ignore
+    except ImportError:  # pragma: no cover - optional dependency
+        return None
+    type_name = '/'.join((*slot_type.names, slot_type.name))
+    try:
+        return get_message(type_name)
+    except (AttributeError, ModuleNotFoundError, ValueError):
+        return None
+
+
+def _message_value_to_primitive(value: object) -> object:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        return list(value)
+    if isinstance(value, dict):
+        return {key: _message_value_to_primitive(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_message_value_to_primitive(item) for item in value]
+    if hasattr(value, '__slots__'):
+        result: Dict[str, object] = {}
+        for slot_name in getattr(type(value), '__slots__', []):
+            attr = slot_name.lstrip('_')
+            if not attr:
+                continue
+            try:
+                slot_value = getattr(value, attr)
+            except AttributeError:
+                continue
+            result[attr] = _message_value_to_primitive(slot_value)
+        return result
+    try:
+        return list(value)
+    except TypeError:
+        return str(value)
+
+
+def _describe_message_type(message_cls, visited: Optional[Set[str]] = None) -> List[Dict[str, object]]:
+    if message_cls is None:
+        return []
+    if visited is None:
+        visited = set()
+    key = f'{message_cls.__module__}.{message_cls.__name__}'
+    if key in visited:
+        return []
+    next_visited = set(visited)
+    next_visited.add(key)
+    descriptors: List[Dict[str, object]] = []
+    instance = message_cls()
+    slot_names = [name.lstrip('_') for name in getattr(message_cls, '__slots__', [])]
+    slot_types = list(getattr(message_cls, 'SLOT_TYPES', []))
+    for field_name, slot_type in zip(slot_names, slot_types):
+        try:
+            default_value = getattr(instance, field_name)
+        except AttributeError:
+            default_value = None
+        descriptor: Dict[str, object] = {
+            'name': field_name,
+            'type': _rosidl_slot_type_to_string(slot_type),
+            'is_array': False,
+            'array_size': None,
+            'max_size': None,
+            'is_basic': False,
+            'default': _message_value_to_primitive(default_value),
+        }
+        if _rosidl_slot_is_array(slot_type):
+            descriptor['is_array'] = True
+            descriptor['array_size'] = _rosidl_slot_array_size(slot_type)
+            max_size = _rosidl_slot_maximum_size(slot_type)
+            if max_size:
+                descriptor['max_size'] = max_size
+            value_type = _rosidl_slot_value_type(slot_type)
+            descriptor['element_type'] = _rosidl_slot_type_to_string(value_type)
+            descriptor['element_is_basic'] = bool(_rosidl_slot_is_basic(value_type))
+            if not descriptor['element_is_basic']:
+                element_cls = _get_message_class_for_slot(value_type)
+                if element_cls is not None:
+                    descriptor['element_schema'] = _describe_message_type(element_cls, next_visited)
+                    descriptor['element_example'] = _message_value_to_primitive(element_cls())
+        else:
+            if _rosidl_slot_is_basic(slot_type):
+                descriptor['is_basic'] = True
+                descriptor['base_type'] = _rosidl_slot_type_to_string(slot_type)
+            else:
+                descriptor['base_type'] = _rosidl_slot_type_to_string(slot_type)
+                nested_cls = _get_message_class_for_slot(slot_type)
+                if nested_cls is not None:
+                    descriptor['children'] = _describe_message_type(nested_cls, next_visited)
+        descriptors.append(descriptor)
+    return descriptors
+
+
+def _resolve_service_name(namespace: str, base: str, service_name: str) -> str:
+    if not service_name:
+        return service_name
+    if service_name.startswith('/'):
+        return service_name
+    node_fqn = _fully_qualified_node_name(namespace, base)
+    return f'{node_fqn}/{service_name}'.replace('//', '/')
+
+
 def _parse_parameter_input(param_type: Optional[int], raw_value: object) -> object:
     if not isinstance(param_type, int):
         raise ValueError('unknown parameter type')
@@ -868,6 +1041,121 @@ class Ros2GraphNode(Node):
         descriptor = descriptors[0]
         return _parameter_descriptor_to_dict(descriptor)
 
+    def _describe_service_for_node(
+        self,
+        base: str,
+        namespace: str,
+        service_name: str,
+        service_type_hint: str = '',
+    ) -> Dict[str, object]:
+        try:
+            entries = self.get_service_names_and_types_by_node(base, namespace)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise RuntimeError(f'failed to fetch services for node: {exc}') from exc
+
+        matching_types: List[str] = []
+        for name, types in entries:
+            if name == service_name:
+                matching_types = list(types)
+                break
+
+        service_type = service_type_hint.strip()
+        if not service_type:
+            if not matching_types:
+                raise ValueError(f"service '{service_name}' not found for node")
+            service_type = matching_types[0]
+        elif matching_types and service_type not in matching_types:
+            matching_types.insert(0, service_type)
+
+        try:
+            from rosidl_runtime_py.utilities import get_service  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError('rosidl_runtime_py is required for service tools') from exc
+
+        try:
+            service_cls = get_service(service_type)
+        except (AttributeError, ModuleNotFoundError, ValueError) as exc:
+            raise RuntimeError(f"failed to import service type '{service_type}'") from exc
+
+        request_cls = getattr(service_cls, 'Request', None)
+        if request_cls is None:
+            raise RuntimeError(f"service '{service_type}' has no Request definition")
+
+        request_schema = _describe_message_type(request_cls)
+        request_example = _message_value_to_primitive(request_cls())
+
+        return {
+            'name': service_name,
+            'type': service_type,
+            'types': matching_types or [service_type],
+            'request': {
+                'fields': request_schema,
+                'example': request_example,
+            },
+        }
+
+    def _call_service_for_node(
+        self,
+        base: str,
+        namespace: str,
+        service_name: str,
+        service_type_hint: str,
+        payload: Dict[str, object],
+    ) -> Tuple[str, Dict[str, object], str]:
+        try:
+            service_info = self._describe_service_for_node(base, namespace, service_name, service_type_hint)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f'failed to prepare service call: {exc}') from exc
+
+        service_type = str(service_info.get('type') or '')
+        if not service_type:
+            raise RuntimeError('unable to determine service type')
+
+        try:
+            from rosidl_runtime_py.utilities import get_service  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError('rosidl_runtime_py is required for service calls') from exc
+
+        try:
+            service_cls = get_service(service_type)
+        except (AttributeError, ModuleNotFoundError, ValueError) as exc:
+            raise RuntimeError(f"failed to import service type '{service_type}'") from exc
+
+        request_cls = getattr(service_cls, 'Request', None)
+        response_cls = getattr(service_cls, 'Response', None)
+        if request_cls is None or response_cls is None:
+            raise RuntimeError(f"service '{service_type}' is missing request/response definitions")
+
+        try:
+            from rosidl_runtime_py import set_message_fields  # type: ignore
+        except ImportError:
+            try:  # pragma: no cover - compatibility
+                from rosidl_runtime_py.set_message_fields import set_message_fields  # type: ignore
+            except ImportError as exc:
+                raise RuntimeError('rosidl_runtime_py.set_message_fields is required for service calls') from exc
+
+        request_message = request_cls()
+        try:
+            set_message_fields(request_message, dict(payload))
+        except Exception as exc:
+            raise ValueError(f'invalid request payload: {exc}') from exc
+
+        service_fqn = _resolve_service_name(namespace, base, service_name)
+        response = self._call_parameter_service(  # reuse generic service call helper
+            service_cls,
+            service_fqn,
+            request_message,
+            timeout=self._parameter_service_timeout,
+        )
+        primitive = _message_value_to_primitive(response)
+        try:
+            response_text = json.dumps(primitive, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            response_text = str(primitive)
+        return service_type, primitive, response_text
+
     def _set_parameter_for_node(
         self,
         base: str,
@@ -938,7 +1226,7 @@ class Ros2GraphNode(Node):
         payload: Optional[Dict[str, object]] = None,
     ) -> Tuple[int, Dict[str, object]]:
         action = (action or '').lower()
-        if action not in {'services', 'parameters', 'set_parameter', 'describe_parameter'}:
+        if action not in {'services', 'parameters', 'set_parameter', 'describe_parameter', 'describe_service', 'call_service'}:
             return 400, {'error': f"unsupported action '{action}'"}
 
         snapshot = self._last_snapshot
@@ -996,6 +1284,71 @@ class Ros2GraphNode(Node):
                 'base': base,
                 'parameters': parameters,
                 'count': len(parameters),
+            }
+
+        if action == 'describe_service':
+            details = dict(payload or {})
+            service_name = str(details.get('service') or '').strip()
+            service_type_hint = str(details.get('type') or '').strip()
+            if not service_name:
+                return 400, {'error': 'missing service name'}
+            try:
+                service_info = self._describe_service_for_node(base, namespace, service_name, service_type_hint)
+            except ValueError as exc:
+                return 404, {'error': str(exc)}
+            except RuntimeError as exc:
+                message = str(exc)
+                status = 503 if 'rosidl_runtime_py' in message else 500
+                return status, {'error': message}
+            except Exception as exc:  # pragma: no cover - defensive
+                return 500, {'error': str(exc)}
+            return 200, {
+                'action': action,
+                'node': node_name,
+                'namespace': namespace,
+                'base': base,
+                'service': service_info,
+            }
+
+        if action == 'call_service':
+            details = dict(payload or {})
+            service_name = str(details.get('service') or '').strip()
+            service_type_hint = str(details.get('type') or '').strip()
+            request_payload = details.get('request')
+            if not service_name:
+                return 400, {'error': 'missing service name'}
+            if not isinstance(request_payload, dict):
+                return 400, {'error': 'service request must be an object'}
+            try:
+                resolved_type, response_data, response_text = self._call_service_for_node(
+                    base,
+                    namespace,
+                    service_name,
+                    service_type_hint,
+                    request_payload,
+                )
+            except TimeoutError as exc:
+                return 504, {'error': str(exc)}
+            except ValueError as exc:
+                return 400, {'error': str(exc)}
+            except RuntimeError as exc:
+                message = str(exc)
+                status = 503 if 'rosidl_runtime_py' in message else 500
+                return status, {'error': message}
+            except Exception as exc:  # pragma: no cover - defensive
+                return 500, {'error': str(exc)}
+            return 200, {
+                'action': action,
+                'node': node_name,
+                'namespace': namespace,
+                'base': base,
+                'service': {
+                    'name': service_name,
+                    'type': resolved_type,
+                },
+                'request': request_payload,
+                'response': response_data,
+                'response_text': response_text,
             }
 
         if action == 'describe_parameter':
