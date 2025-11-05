@@ -132,7 +132,7 @@ export function createLayoutScaler(layout, canvasWidth, canvasHeight) {
   ).map(node => Number(node.height) || 0);
   const avgNodeHeight = nodeHeights.length ? nodeHeights.reduce((sum, h) => sum + h, 0) / nodeHeights.length : 0;
   const averagePixelHeight = avgNodeHeight * layoutScale * scale;
-  const verticalMultiplier = averagePixelHeight > 0 ? 1 + Math.min(1.2, 0.35 * (averagePixelHeight / 20)) : 1.25;
+  const verticalMultiplier = averagePixelHeight > 0 ? 1 + Math.min(1.6, 0.5 * (averagePixelHeight / 20)) : 1.35;
 
   return {
     scale,
