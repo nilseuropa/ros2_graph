@@ -124,7 +124,13 @@ export function buildScene(graph, canvasWidth, canvasHeight) {
   const edges = effectiveLayout.edges
     .filter(edge => visibleNames.has(edge.tail) && visibleNames.has(edge.head))
     .map(edge => {
-      const points = orthogonalizePoints(edge.points.map(point => scaler.toCanvas(point)));
+      const tailType = topics.has(edge.tail) ? 'topic' : nodes.has(edge.tail) ? 'node' : 'other';
+      const headType = topics.has(edge.head) ? 'topic' : nodes.has(edge.head) ? 'node' : 'other';
+      const points = orthogonalizePoints(
+        edge.points.map(point => scaler.toCanvas(point)),
+        tailType,
+        headType,
+      );
       return {
         tail: edge.tail,
         head: edge.head,
@@ -146,7 +152,7 @@ export function buildScene(graph, canvasWidth, canvasHeight) {
   };
 }
 
-function orthogonalizePoints(points) {
+function orthogonalizePoints(points, tailType, headType) {
   if (!Array.isArray(points) || points.length < 2) {
     return points || [];
   }
@@ -162,7 +168,14 @@ function orthogonalizePoints(points) {
     result.push(end);
     return result;
   }
-  const mid = dx >= dy ? { x: end.x, y: start.y } : { x: start.x, y: end.y };
+  let mid;
+  if (headType === 'topic') {
+    mid = { x: start.x, y: end.y };
+  } else if (tailType === 'topic') {
+    mid = { x: end.x, y: start.y };
+  } else {
+    mid = dx >= dy ? { x: end.x, y: start.y } : { x: start.x, y: end.y };
+  }
   if (!isSame(start, mid)) {
     result.push(mid);
   }
