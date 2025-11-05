@@ -8,6 +8,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from importlib import resources
+import mimetypes
 from socketserver import ThreadingMixIn
 from typing import Dict, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import parse_qs
@@ -52,7 +53,7 @@ class GraphWebServer:
                 else:
                     path = raw_path
                     params = {}
-                if path in ('/', '/index.html', '/styles.css', '/app.js'):
+                if parent._is_static_path(path):
                     parent._serve_static(self, path)
                 elif path == '/graph':
                     parent._serve_graph(self)
@@ -144,8 +145,31 @@ class GraphWebServer:
         with self._lock:
             return self._latest_payload
 
+    def _is_static_path(self, path: str) -> bool:
+        if path in STATIC_FILES:
+            return True
+        if not path.startswith('/'):
+            return False
+        rel_path = path.lstrip('/')
+        if '..' in rel_path or rel_path.startswith('/'):
+            return False
+        candidate = resources.files(__package__).joinpath('static', rel_path)
+        return candidate.is_file()
+
     def _serve_static(self, handler: BaseHTTPRequestHandler, path: str) -> None:
-        rel_path, content_type = STATIC_FILES[path]
+        if path in STATIC_FILES:
+            rel_path, content_type = STATIC_FILES[path]
+        else:
+            rel_path = path.lstrip('/')
+            if '..' in rel_path or rel_path.startswith('/'):
+                handler.send_error(404, 'Asset not found')
+                return
+            guess = resources.files(__package__).joinpath('static', rel_path)
+            if not guess.is_file():
+                handler.send_error(404, 'Asset not found')
+                return
+            content_type = _guess_mime_type(rel_path)
+
         try:
             data = resources.files(__package__).joinpath('static', rel_path).read_bytes()
         except FileNotFoundError:
@@ -295,5 +319,15 @@ STATIC_FILES: Dict[str, Tuple[str, str]] = {
     '/': ('index.html', 'text/html; charset=utf-8'),
     '/index.html': ('index.html', 'text/html; charset=utf-8'),
     '/styles.css': ('styles.css', 'text/css; charset=utf-8'),
-    '/app.js': ('app.js', 'application/javascript; charset=utf-8'),
+    '/app.js': ('poc.js', 'application/javascript; charset=utf-8'),
+    '/poc.js': ('poc.js', 'application/javascript; charset=utf-8'),
 }
+
+
+def _guess_mime_type(rel_path: str) -> str:
+    mime, _ = mimetypes.guess_type(rel_path)
+    if not mime:
+        return 'application/octet-stream'
+    if mime.startswith('text/') or mime in ('application/javascript', 'application/json'):
+        return f'{mime}; charset=utf-8'
+    return mime
