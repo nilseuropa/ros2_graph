@@ -192,6 +192,8 @@ header h1 {
   padding: 0.9rem 1rem 1.75rem;
   flex: 1 1 auto;
   overflow: auto;
+  min-height: 0;
+  min-width: 0;
 }
 
 .overlay-panel__resizer {
@@ -232,6 +234,11 @@ header h1 {
   gap: 0.5rem;
 }
 
+.overlay-panel__section--code {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 .overlay-panel__section:first-of-type {
   border-top: none;
   padding-top: 0;
@@ -251,9 +258,14 @@ header h1 {
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 0.82rem;
   line-height: 1.45;
-  max-height: 220px;
   overflow: auto;
   white-space: pre-wrap;
+}
+
+.overlay-panel__section--code .overlay-panel__code {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
 }
 
 .overlay-panel__table {

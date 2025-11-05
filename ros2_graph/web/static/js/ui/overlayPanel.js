@@ -290,7 +290,7 @@ export class OverlayPanel {
 
   renderCodeSection(container, section) {
     const wrapper = document.createElement('div');
-    wrapper.className = 'overlay-panel__section';
+    wrapper.className = 'overlay-panel__section overlay-panel__section--code';
     if (section.title) {
       const heading = document.createElement('div');
       heading.className = 'overlay-panel__section-title';
