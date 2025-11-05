@@ -150,36 +150,26 @@ function orthogonalizePoints(points) {
   if (!Array.isArray(points) || points.length < 2) {
     return points || [];
   }
-  const result = [points[0]];
-  for (let i = 1; i < points.length; i += 1) {
-    const prev = result[result.length - 1];
-    const curr = points[i];
-    if (!prev) {
-      result.push(curr);
-      continue;
-    }
-    if (isSame(prev, curr)) {
-      continue;
-    }
-    const dx = curr.x - prev.x;
-    const dy = curr.y - prev.y;
-    if (Math.abs(dx) < 1e-2 || Math.abs(dy) < 1e-2) {
-      result.push(curr);
-      continue;
-    }
-    const midFirst = { x: curr.x, y: prev.y };
-    const midSecond = { x: prev.x, y: curr.y };
-    // Prefer the turn that keeps overall path shorter by examining next point when available.
-    const preferHorizontal = Math.abs(dx) >= Math.abs(dy);
-    const chosenMid = preferHorizontal ? midFirst : midSecond;
-    if (!isSame(prev, chosenMid)) {
-      result.push(chosenMid);
-    }
-    if (!isSame(chosenMid, curr)) {
-      result.push(curr);
-    }
+  const start = points[0];
+  const end = points[points.length - 1];
+  if (isSame(start, end)) {
+    return [start];
   }
-  return dedupeConsecutive(result);
+  const result = [start];
+  const dx = Math.abs(end.x - start.x);
+  const dy = Math.abs(end.y - start.y);
+  if (dx < 1e-2 || dy < 1e-2) {
+    result.push(end);
+    return result;
+  }
+  const mid = dx >= dy ? { x: end.x, y: start.y } : { x: start.x, y: end.y };
+  if (!isSame(start, mid)) {
+    result.push(mid);
+  }
+  if (!isSame(mid, end)) {
+    result.push(end);
+  }
+  return result;
 }
 
 function isSame(a, b) {
