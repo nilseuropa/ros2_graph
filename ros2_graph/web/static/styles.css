@@ -114,7 +114,8 @@ header h1 {
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
   display: flex;
   flex-direction: column;
-  min-width: 240px;
+  min-width: 200px;
+  min-height: 160px;
   overflow: hidden;
   z-index: 20;
 }
@@ -188,9 +189,33 @@ header h1 {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  padding: 0.9rem 1rem 1rem;
+  padding: 0.9rem 1rem 1.75rem;
   flex: 1 1 auto;
   overflow: auto;
+}
+
+.overlay-panel__resizer {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  bottom: 6px;
+  right: 6px;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.overlay-panel__resizer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, transparent 0 55%, rgba(88, 166, 255, 0.85) 55% 100%);
+  border-radius: 0 0 4px 0;
+  opacity: 0.85;
+}
+
+.overlay-panel__resizer:hover::before,
+.overlay-panel__resizer:focus-visible::before {
+  background: linear-gradient(135deg, transparent 0 55%, rgba(88, 166, 255, 1) 55% 100%);
 }
 
 .overlay-panel__description {

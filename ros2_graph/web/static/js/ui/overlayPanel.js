@@ -2,6 +2,9 @@ import { toggleHidden, clamp } from '../utils/dom.js';
 
 const EDGE_PADDING = 16;
 const MIN_PANEL_WIDTH = 320;
+const MIN_RESIZE_WIDTH = 200;
+const MIN_PANEL_HEIGHT = 200;
+const MIN_RESIZE_HEIGHT = 160;
 const MAX_PANEL_WIDTH = 720;
 
 export class OverlayPanel {
@@ -12,8 +15,11 @@ export class OverlayPanel {
     this.spawnIndex = 0;
     this.zIndexSeed = 30;
     this.dragState = null;
+    this.resizeState = null;
     this.handlePointerMove = this.handlePointerMove.bind(this);
     this.handlePointerUp = this.handlePointerUp.bind(this);
+    this.handleResizePointerMove = this.handleResizePointerMove.bind(this);
+    this.handleResizePointerUp = this.handleResizePointerUp.bind(this);
     this.handleWindowResize = this.handleWindowResize.bind(this);
     window.addEventListener('resize', this.handleWindowResize);
   }
@@ -48,11 +54,15 @@ export class OverlayPanel {
       if (this.dragState?.overlayId === options.id) {
         this.endDrag();
       }
+      if (this.resizeState?.overlayId === options.id) {
+        this.endResize();
+      }
       return;
     }
     this.overlays.forEach(entry => entry.root.remove());
     this.overlays.clear();
     this.endDrag();
+    this.endResize();
   }
 
   isOpen(id) {
@@ -105,9 +115,14 @@ export class OverlayPanel {
     const body = document.createElement('div');
     body.className = 'overlay-panel__body';
 
+    const resizer = document.createElement('div');
+    resizer.className = 'overlay-panel__resizer';
+    resizer.setAttribute('aria-hidden', 'true');
+
     root.appendChild(header);
     root.appendChild(subtitle);
     root.appendChild(body);
+    root.appendChild(resizer);
 
     this.container.appendChild(root);
 
@@ -118,10 +133,16 @@ export class OverlayPanel {
       titleEl: title,
       subtitleEl: subtitle,
       bodyEl: body,
+      resizer,
+      size: {
+        width: null,
+        height: null,
+      },
     };
 
     closeBtn.addEventListener('click', () => this.hide({ id }));
     header.addEventListener('pointerdown', event => this.startDrag(event, overlay));
+    resizer.addEventListener('pointerdown', event => this.startResize(event, overlay));
     root.addEventListener('pointerdown', () => this.bringToFront(overlay));
     root.addEventListener('keydown', event => {
       if (event.key === 'Escape') {
@@ -288,14 +309,46 @@ export class OverlayPanel {
       return;
     }
     const containerWidth = this.container?.clientWidth || window.innerWidth || MIN_PANEL_WIDTH;
-    const containerHeight = this.container?.clientHeight || window.innerHeight || 0;
-    const maxWidth = clamp(containerWidth - EDGE_PADDING * 2, MIN_PANEL_WIDTH, MAX_PANEL_WIDTH);
-    overlay.root.style.maxWidth = `${maxWidth}px`;
-    overlay.root.style.maxHeight = `${Math.max(160, containerHeight - EDGE_PADDING * 2)}px`;
-    overlay.root.style.width = 'auto';
-    const measured = overlay.root.scrollWidth + 24;
-    const width = clamp(Math.ceil(measured), MIN_PANEL_WIDTH, maxWidth);
-    overlay.root.style.width = `${width}px`;
+    const containerHeight = this.container?.clientHeight || window.innerHeight || MIN_PANEL_HEIGHT;
+
+    const maxWidthAvailable = Math.max(0, containerWidth - EDGE_PADDING * 2);
+    const hasCustomWidth = overlay.size?.width != null;
+    const minWidthLimit = hasCustomWidth ? MIN_RESIZE_WIDTH : MIN_PANEL_WIDTH;
+    const widthLowerBound =
+      maxWidthAvailable > 0 && maxWidthAvailable < minWidthLimit ? maxWidthAvailable : minWidthLimit;
+    const widthUpperBoundRaw = Math.min(MAX_PANEL_WIDTH, maxWidthAvailable);
+    const widthUpperBound = Math.max(widthLowerBound, widthUpperBoundRaw);
+    const effectiveMaxWidth = widthUpperBound > 0 ? widthUpperBound : Math.max(widthLowerBound, MIN_PANEL_WIDTH);
+    overlay.root.style.maxWidth = `${effectiveMaxWidth}px`;
+
+    if (overlay.size?.width != null) {
+      const width = clamp(overlay.size.width, widthLowerBound, widthUpperBound);
+      overlay.size.width = width;
+      overlay.root.style.width = `${width}px`;
+    } else {
+      overlay.root.style.width = 'auto';
+      const measured = Math.ceil(overlay.root.scrollWidth + 24);
+      const width = clamp(measured, widthLowerBound, widthUpperBound || effectiveMaxWidth || measured);
+      overlay.root.style.width = `${width}px`;
+    }
+
+    const maxHeightAvailable = Math.max(0, containerHeight - EDGE_PADDING * 2);
+    const hasCustomHeight = overlay.size?.height != null;
+    const minHeightLimit = hasCustomHeight ? MIN_RESIZE_HEIGHT : MIN_PANEL_HEIGHT;
+    const heightLowerBound =
+      maxHeightAvailable > 0 && maxHeightAvailable < minHeightLimit ? maxHeightAvailable : minHeightLimit;
+    const heightUpperBound = Math.max(heightLowerBound, maxHeightAvailable);
+    const effectiveMaxHeight =
+      heightUpperBound > 0 ? heightUpperBound : Math.max(heightLowerBound, MIN_PANEL_HEIGHT);
+    overlay.root.style.maxHeight = `${effectiveMaxHeight}px`;
+
+    if (overlay.size?.height != null) {
+      const height = clamp(overlay.size.height, heightLowerBound, heightUpperBound);
+      overlay.size.height = height;
+      overlay.root.style.height = `${height}px`;
+    } else {
+      overlay.root.style.height = '';
+    }
   }
 
   ensureWithinBounds(overlay) {
@@ -338,6 +391,7 @@ export class OverlayPanel {
     if (event.target.closest('button')) {
       return;
     }
+    this.endResize();
     event.preventDefault();
     const containerRect = this.container.getBoundingClientRect();
     const overlayRect = overlay.root.getBoundingClientRect();
@@ -391,6 +445,85 @@ export class OverlayPanel {
     this.endDrag();
   }
 
+  startResize(event, overlay) {
+    if (!overlay?.root) {
+      return;
+    }
+    if (event.button !== undefined && event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    this.endDrag();
+    const containerRect = this.container?.getBoundingClientRect();
+    const overlayRect = overlay.root.getBoundingClientRect();
+    this.resizeState = {
+      overlayId: overlay.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: overlayRect.width,
+      startHeight: overlayRect.height,
+      offsetLeft: overlayRect.left - (containerRect?.left ?? 0),
+      offsetTop: overlayRect.top - (containerRect?.top ?? 0),
+    };
+    this.bringToFront(overlay);
+    window.addEventListener('pointermove', this.handleResizePointerMove);
+    window.addEventListener('pointerup', this.handleResizePointerUp);
+    window.addEventListener('pointercancel', this.handleResizePointerUp);
+  }
+
+  handleResizePointerMove(event) {
+    if (!this.resizeState || event.pointerId !== this.resizeState.pointerId) {
+      return;
+    }
+    event.preventDefault();
+    const overlay = this.overlays.get(this.resizeState.overlayId);
+    if (!overlay?.root) {
+      this.endResize();
+      return;
+    }
+    const containerWidth = this.container?.clientWidth || window.innerWidth || this.resizeState.startWidth;
+    const containerHeight = this.container?.clientHeight || window.innerHeight || this.resizeState.startHeight;
+    const left = this.resolvePositionValue(overlay.root.style.left, this.resizeState.offsetLeft);
+    const top = this.resolvePositionValue(overlay.root.style.top, this.resizeState.offsetTop);
+    const deltaX = event.clientX - this.resizeState.startX;
+    const deltaY = event.clientY - this.resizeState.startY;
+    const desiredWidth = this.resizeState.startWidth + deltaX;
+    const desiredHeight = this.resizeState.startHeight + deltaY;
+    const maxWidth = clamp(containerWidth - EDGE_PADDING * 2, MIN_RESIZE_WIDTH, MAX_PANEL_WIDTH);
+    const maxHeight = Math.max(MIN_RESIZE_HEIGHT, containerHeight - EDGE_PADDING * 2);
+
+    const availableWidth = Math.max(0, containerWidth - EDGE_PADDING - left);
+    const widthUpperBoundRaw = Math.min(maxWidth, availableWidth);
+    const widthLowerBound =
+      widthUpperBoundRaw > 0 && widthUpperBoundRaw < MIN_RESIZE_WIDTH ? widthUpperBoundRaw : MIN_RESIZE_WIDTH;
+    const widthUpperBound = Math.max(widthLowerBound, widthUpperBoundRaw);
+    const newWidth = clamp(desiredWidth, widthLowerBound, widthUpperBound);
+
+    const availableHeight = Math.max(0, containerHeight - EDGE_PADDING - top);
+    const heightUpperBoundRaw = Math.min(maxHeight, availableHeight);
+    const heightLowerBound =
+      heightUpperBoundRaw > 0 && heightUpperBoundRaw < MIN_RESIZE_HEIGHT ? heightUpperBoundRaw : MIN_RESIZE_HEIGHT;
+    const heightUpperBound = Math.max(heightLowerBound, heightUpperBoundRaw);
+    const newHeight = clamp(desiredHeight, heightLowerBound, heightUpperBound);
+
+    overlay.root.style.width = `${newWidth}px`;
+    overlay.root.style.height = `${newHeight}px`;
+    overlay.root.style.maxWidth = `${maxWidth}px`;
+    overlay.root.style.maxHeight = `${maxHeight}px`;
+    overlay.size.width = newWidth;
+    overlay.size.height = newHeight;
+    this.ensureWithinBounds(overlay);
+  }
+
+  handleResizePointerUp(event) {
+    if (!this.resizeState || event.pointerId !== this.resizeState.pointerId) {
+      return;
+    }
+    this.endResize();
+  }
+
   endDrag() {
     if (!this.dragState) {
       return;
@@ -399,6 +532,16 @@ export class OverlayPanel {
     window.removeEventListener('pointerup', this.handlePointerUp);
     window.removeEventListener('pointercancel', this.handlePointerUp);
     this.dragState = null;
+  }
+
+  endResize() {
+    if (!this.resizeState) {
+      return;
+    }
+    window.removeEventListener('pointermove', this.handleResizePointerMove);
+    window.removeEventListener('pointerup', this.handleResizePointerUp);
+    window.removeEventListener('pointercancel', this.handleResizePointerUp);
+    this.resizeState = null;
   }
 
   handleWindowResize() {
