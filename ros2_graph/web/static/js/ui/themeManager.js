@@ -16,6 +16,7 @@ const CUSTOM_COLOR_KEYS = [
   'graphTopicFill',
   'graphTopicHover',
   'graphTopicSelect',
+  'graphLabelText',
 ];
 
 const BUILTIN_THEMES = {
@@ -37,6 +38,7 @@ const BUILTIN_THEMES = {
       graphTopicFill: '#14202c',
       graphTopicHover: '#162331',
       graphTopicSelect: '#1f2e41',
+      graphLabelText: '#f0f6fc',
     },
   },
   light: {
@@ -57,6 +59,7 @@ const BUILTIN_THEMES = {
       graphTopicFill: '#eef6ff',
       graphTopicHover: '#e0edf9',
       graphTopicSelect: '#ffeddc',
+      graphLabelText: '#1f2328',
     },
   },
 };
@@ -277,6 +280,7 @@ export class ThemeManager {
     setColorProperty(style, '--graph-topic-fill', theme.colors.graphTopicFill);
     setColorProperty(style, '--graph-topic-hover', theme.colors.graphTopicHover);
     setColorProperty(style, '--graph-topic-select', theme.colors.graphTopicSelect);
+    setColorProperty(style, '--graph-label-text', theme.colors.graphLabelText);
 
     const scheme = theme.scheme === 'light' ? 'light' : 'dark';
     const set = SHADOWS[scheme] ?? SHADOWS.dark;
@@ -330,6 +334,7 @@ export class ThemeManager {
         hoverFill: theme.colors.graphTopicHover,
         selectFill: theme.colors.graphTopicSelect,
       },
+      labelText: theme.colors.graphLabelText,
     };
   }
 

@@ -19,6 +19,7 @@
   --graph-topic-fill: #14202c;
   --graph-topic-hover: #162331;
   --graph-topic-select: #1f2e41;
+  --graph-label-text: #f0f6fc;
   --shadow-lg: 0 12px 24px rgba(0, 0, 0, 0.4);
   --shadow-xl: 0 16px 48px rgba(0, 0, 0, 0.45);
   --shadow-xxl: 0 28px 64px rgba(0, 0, 0, 0.5);
@@ -46,6 +47,7 @@ body[data-theme='dark'] {
   --graph-topic-fill: #14202c;
   --graph-topic-hover: #162331;
   --graph-topic-select: #1f2e41;
+  --graph-label-text: #f0f6fc;
 }
 
 body[data-theme='light'] {
@@ -69,6 +71,7 @@ body[data-theme='light'] {
   --graph-topic-fill: #eef6ff;
   --graph-topic-hover: #e0edf9;
   --graph-topic-select: #ffeddc;
+  --graph-label-text: #1f2328;
   --shadow-lg: 0 12px 24px rgba(15, 23, 42, 0.18);
   --shadow-xl: 0 16px 48px rgba(15, 23, 42, 0.2);
   --shadow-xxl: 0 28px 64px rgba(15, 23, 42, 0.22);

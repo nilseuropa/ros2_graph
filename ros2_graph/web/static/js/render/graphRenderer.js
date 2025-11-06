@@ -16,6 +16,7 @@ const DEFAULT_GRAPH_PALETTE = {
     hoverFill: '#162331',
     selectFill: '#1f2e41',
   },
+  labelText: '#f0f6fc',
 };
 
 function cloneGraphPalette(palette) {
@@ -34,6 +35,7 @@ function cloneGraphPalette(palette) {
       hoverFill: source.topic?.hoverFill,
       selectFill: source.topic?.selectFill,
     },
+    labelText: source.labelText,
   };
 }
 
@@ -53,6 +55,7 @@ function normalizeGraphPalette(palette) {
       hoverFill: source.topic.hoverFill ?? DEFAULT_GRAPH_PALETTE.topic.hoverFill,
       selectFill: source.topic.selectFill ?? DEFAULT_GRAPH_PALETTE.topic.selectFill,
     },
+    labelText: source.labelText ?? DEFAULT_GRAPH_PALETTE.labelText,
   };
 }
 
@@ -548,7 +551,7 @@ export class GraphRenderer {
             stroke: palette.edge,
             fill: palette.node.baseFill,
           };
-      this.drawEllipse(geometry, highlight);
+      this.drawEllipse(geometry, highlight, palette.labelText);
     });
 
     this.scene.topics.forEach((geometry, name) => {
@@ -560,11 +563,11 @@ export class GraphRenderer {
             stroke: palette.edge,
             fill: palette.topic.baseFill,
           };
-      this.drawRoundedRect(geometry, highlight);
+      this.drawRoundedRect(geometry, highlight, palette.labelText);
     });
   }
 
-  drawEllipse(geometry, highlight) {
+  drawEllipse(geometry, highlight, textColor) {
     const { ctx } = this;
     ctx.save();
     ctx.lineWidth = this.getStrokeWidth();
@@ -585,11 +588,12 @@ export class GraphRenderer {
     drawLabel(ctx, geometry.labelLines, geometry.center, geometry.width, {
       fontSize: geometry.fontSize,
       lineHeight: geometry.lineHeight,
+      color: textColor,
     });
     ctx.restore();
   }
 
-  drawRoundedRect(geometry, highlight) {
+  drawRoundedRect(geometry, highlight, textColor) {
     const { ctx } = this;
     const radius = Math.min(12, Math.min(geometry.width, geometry.height) / 4);
     const x = geometry.center.x - geometry.width / 2;
@@ -619,6 +623,7 @@ export class GraphRenderer {
     drawLabel(ctx, geometry.labelLines, geometry.center, geometry.width, {
       fontSize: geometry.fontSize,
       lineHeight: geometry.lineHeight,
+      color: textColor,
     });
     ctx.restore();
   }

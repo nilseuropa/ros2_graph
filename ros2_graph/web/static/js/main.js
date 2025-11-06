@@ -208,6 +208,15 @@ function ensureSettingsForm(container) {
               </label>
             </div>
           </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Labels</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphLabelText">
+                <span>Text</span>
+                <input type="color" id="customGraphLabelText" name="customGraphLabelText" value="#f0f6fc">
+              </label>
+            </div>
+          </div>
           <div class="settings-form__actions">
             <button type="button" id="customThemeReset" class="secondary">Reset custom theme</button>
           </div>
@@ -234,6 +243,7 @@ function ensureSettingsForm(container) {
     graphTopicFill: container.querySelector('#customGraphTopicFill'),
     graphTopicHover: container.querySelector('#customGraphTopicHover'),
     graphTopicSelect: container.querySelector('#customGraphTopicSelect'),
+    graphLabelText: container.querySelector('#customGraphLabelText'),
   };
   return { form, customSection, schemeSelect, resetButton, colorInputs };
 }
