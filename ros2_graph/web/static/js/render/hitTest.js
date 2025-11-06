@@ -52,7 +52,8 @@ export function hitEdges(scene, point) {
   let best = null;
   let bestDistance = Infinity;
   for (const edge of scene.edges) {
-    const distance = distanceToPolyline(point, edge.points);
+    const points = edge.__renderPoints ?? edge.points;
+    const distance = distanceToPolyline(point, points);
     if (distance < bestDistance && distance <= EDGE_HIT_THRESHOLD) {
       bestDistance = distance;
       best = {

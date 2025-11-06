@@ -10,6 +10,7 @@ import {
   HOVER_EDGE_COLOR,
 } from '../constants/index.js';
 import { arrowHeadSize, drawLabel } from '../layout/graphviz.js';
+import { computeFitView } from './sceneBuilder.js';
 import { BASE_FONT_FAMILY } from '../constants/index.js';
 
 export class GraphRenderer {
@@ -71,12 +72,68 @@ export class GraphRenderer {
     if (!this.scene) {
       return;
     }
+    const bounds = {
+      minX: Infinity,
+      minY: Infinity,
+      maxX: -Infinity,
+      maxY: -Infinity,
+    };
+    const updateRectBounds = geometry => {
+      if (!geometry?.center) {
+        return;
+      }
+      const halfWidth = Math.max(geometry.width, 0) / 2;
+      const halfHeight = Math.max(geometry.height, 0) / 2;
+      const left = geometry.center.x - halfWidth;
+      const right = geometry.center.x + halfWidth;
+      const top = geometry.center.y - halfHeight;
+      const bottom = geometry.center.y + halfHeight;
+      bounds.minX = Math.min(bounds.minX, left);
+      bounds.maxX = Math.max(bounds.maxX, right);
+      bounds.minY = Math.min(bounds.minY, top);
+      bounds.maxY = Math.max(bounds.maxY, bottom);
+    };
+    const updatePointBounds = point => {
+      if (!point) {
+        return;
+      }
+      if (Number.isFinite(point.x)) {
+        bounds.minX = Math.min(bounds.minX, point.x);
+        bounds.maxX = Math.max(bounds.maxX, point.x);
+      }
+      if (Number.isFinite(point.y)) {
+        bounds.minY = Math.min(bounds.minY, point.y);
+        bounds.maxY = Math.max(bounds.maxY, point.y);
+      }
+    };
     this.scene.nodes.forEach(geometry => {
       this.ensureLabelFits(geometry, 16, true);
+      updateRectBounds(geometry);
     });
     this.scene.topics.forEach(geometry => {
       this.ensureLabelFits(geometry, 20, false);
+      updateRectBounds(geometry);
     });
+    this.scene.edges.forEach(edge => {
+      const adjustedPoints = this.adjustEdgePoints(edge);
+      edge.__renderPoints = adjustedPoints;
+      adjustedPoints.forEach(updatePointBounds);
+    });
+    if (bounds.minX !== Infinity && bounds.minY !== Infinity) {
+      const width = Math.max(bounds.maxX - bounds.minX, 0);
+      const height = Math.max(bounds.maxY - bounds.minY, 0);
+      this.scene.bounds = {
+        minX: bounds.minX,
+        minY: bounds.minY,
+        maxX: bounds.maxX,
+        maxY: bounds.maxY,
+        width,
+        height,
+        centerX: bounds.minX + width / 2,
+        centerY: bounds.minY + height / 2,
+      };
+      this.scene.fitView = computeFitView(this.scene.bounds, this.canvas.width, this.canvas.height);
+    }
   }
 
   getStrokeWidth() {
@@ -94,7 +151,7 @@ export class GraphRenderer {
       const key = `${edge.tail}->${edge.head}`;
       const isSelected = selectedEdges.has(key);
       const isHover = hoverEdges.has(key);
-      const points = this.adjustEdgePoints(edge);
+      const points = edge.__renderPoints ?? this.adjustEdgePoints(edge);
       ctx.save();
       ctx.lineWidth = strokeWidth;
       ctx.strokeStyle = isSelected
@@ -158,7 +215,7 @@ export class GraphRenderer {
     if (original.length < 2) {
       return;
     }
-    const axis = this.computeAxis(basePoint, neighborPoint);
+    const axis = this.computeAxis(candidate, neighborPoint);
     this.shiftForward(adjusted, original, 0, deltaX, deltaY, axis);
   }
 
@@ -183,7 +240,7 @@ export class GraphRenderer {
     if (neighborPoint === undefined) {
       return;
     }
-    const axis = this.computeAxis(neighborPoint, basePoint);
+    const axis = this.computeAxis(neighborPoint, candidate);
     this.shiftBackward(adjusted, original, lastIndex, deltaX, deltaY, axis);
   }
 
@@ -196,19 +253,24 @@ export class GraphRenderer {
     if (!center) {
       return null;
     }
-    const directionSource = neighborPoint ?? basePoint;
-    if (!directionSource) {
-      return null;
-    }
-    let direction = {
-      x: directionSource.x - center.x,
-      y: directionSource.y - center.y,
-    };
-    if (Math.abs(direction.x) < 1e-3 && Math.abs(direction.y) < 1e-3 && basePoint) {
+    let direction = null;
+    if (basePoint) {
       direction = {
         x: basePoint.x - center.x,
         y: basePoint.y - center.y,
       };
+    }
+    const isDegenerate =
+      !direction ||
+      (Math.abs(direction.x) < 1e-3 && Math.abs(direction.y) < 1e-3);
+    if (isDegenerate && neighborPoint) {
+      direction = {
+        x: neighborPoint.x - center.x,
+        y: neighborPoint.y - center.y,
+      };
+    }
+    if (!direction) {
+      return null;
     }
     if (Math.abs(direction.x) < 1e-3 && Math.abs(direction.y) < 1e-3) {
       return null;
@@ -513,6 +575,7 @@ export class GraphRenderer {
     const lineHeight = Math.max(geometry.lineHeight || fontSize * 1.4, fontSize);
     const fontFamily = geometry.fontFamily || BASE_FONT_FAMILY;
     ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.font = `${fontSize}px ${fontFamily}`;
     let maxWidth = 0;
     geometry.labelLines.forEach(line => {
@@ -532,5 +595,6 @@ export class GraphRenderer {
     }
     geometry.fontFamily = fontFamily;
     geometry.lineHeight = lineHeight;
+    geometry.fontSize = fontSize;
   }
 }

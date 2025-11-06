@@ -70,6 +70,10 @@ export class Store {
     return { ...this.view };
   }
 
+  getScene() {
+    return this.scene;
+  }
+
   getSelection() {
     return {
       nodes: new Set(this.selection.nodes),

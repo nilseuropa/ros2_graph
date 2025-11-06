@@ -1,6 +1,6 @@
 // Core UI constants shared across modules.
 
-export const VIEW_MIN_SCALE = 0.25;
+export const VIEW_MIN_SCALE = 0.05;
 export const VIEW_MAX_SCALE = 6;
 export const ZOOM_SENSITIVITY = 0.0015;
 

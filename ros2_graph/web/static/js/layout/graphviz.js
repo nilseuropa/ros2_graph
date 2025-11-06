@@ -108,45 +108,52 @@ export function parseGraphvizPlain(text) {
   return { scale, width, height, nodes, edges };
 }
 
-export function createLayoutScaler(layout, canvasWidth, canvasHeight) {
+export function createLayoutScaler(layout) {
   const layoutScale = layout.scale && layout.scale > 0 ? layout.scale : 1;
-  const scaledWidth = layout.width * layoutScale;
-  const scaledHeight = layout.height * layoutScale;
-  if (!scaledWidth || !scaledHeight) {
+  const baseScale = layoutScale * POINTS_PER_INCH;
+  const scaledWidth = layout.width * baseScale;
+  if (!scaledWidth || !Number.isFinite(baseScale)) {
     return null;
   }
-  const scaleX = (canvasWidth - CANVAS_MARGIN * 2) / scaledWidth;
-  const scaleY = (canvasHeight - CANVAS_MARGIN * 2) / scaledHeight;
-  const scale = Math.min(scaleX, scaleY);
-  if (!Number.isFinite(scale) || scale <= 0) {
-    return null;
-  }
-
-  const scaledCanvasWidth = scaledWidth * scale;
-  const scaledCanvasHeight = scaledHeight * scale;
-  const offsetX = (canvasWidth - scaledCanvasWidth) / 2;
-  const offsetY = (canvasHeight - scaledCanvasHeight) / 2;
 
   const nodeHeights = Array.from(
     layout.nodes instanceof Map ? layout.nodes.values() : Object.values(layout.nodes || {}),
   ).map(node => Number(node.height) || 0);
-  const avgNodeHeight = nodeHeights.length ? nodeHeights.reduce((sum, h) => sum + h, 0) / nodeHeights.length : 0;
-  const averagePixelHeight = avgNodeHeight * layoutScale * scale;
-  const verticalMultiplier = averagePixelHeight > 0 ? 1 + Math.min(1.6, 0.5 * (averagePixelHeight / 20)) : 1.35;
+  const avgNodeHeight = nodeHeights.length
+    ? nodeHeights.reduce((sum, h) => sum + h, 0) / nodeHeights.length
+    : 0;
+  const averagePixelHeight = avgNodeHeight * baseScale;
+  const normalizedHeight = averagePixelHeight > 0 ? averagePixelHeight / 32 : 0;
+  const verticalMultiplier =
+    1 + Math.min(0.4, 0.1 * normalizedHeight + 0.08);
+  const marginX = CANVAS_MARGIN;
+  const marginY = CANVAS_MARGIN;
+  const stretchedHeight = layout.height * verticalMultiplier;
+  const totalWidth = scaledWidth + marginX * 2;
+  const totalHeight = stretchedHeight * baseScale + marginY * 2;
 
   return {
-    scale,
+    scale: baseScale,
+    verticalMultiplier,
+    dimensions: {
+      width: totalWidth,
+      height: totalHeight,
+    },
+    marginX,
+    marginY,
     toCanvas({ x, y }) {
-      const baseY = offsetY + y * layoutScale * scale;
+      const scaledX = x * baseScale + marginX;
       const offsetFromCenter = y - layout.height / 2;
-      const extra = offsetFromCenter * layoutScale * scale * (verticalMultiplier - 1);
+      const stretchedOffset = offsetFromCenter * verticalMultiplier;
+      const stretchedY = layout.height / 2 + stretchedOffset;
+      const scaledY = stretchedY * baseScale + marginY;
       return {
-        x: offsetX + x * layoutScale * scale,
-        y: canvasHeight - baseY - extra,
+        x: scaledX,
+        y: totalHeight - scaledY,
       };
     },
     scaleLength(value) {
-      return value * layoutScale * scale;
+      return value * baseScale;
     },
   };
 }

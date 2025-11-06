@@ -1,5 +1,5 @@
 import { GraphApi } from './api/graphApi.js';
-import { buildScene } from './render/sceneBuilder.js';
+import { buildScene, computeFitView } from './render/sceneBuilder.js';
 import { GraphRenderer } from './render/graphRenderer.js';
 import { ViewController } from './interaction/viewController.js';
 import { InteractionController } from './interaction/interactionController.js';
@@ -75,7 +75,28 @@ function resizeCanvas() {
     el.width = newWidth;
     el.height = newHeight;
   });
+  const scene = store.getScene();
+  if (scene) {
+    const nextFit = computeFitView(scene.bounds, newWidth, newHeight);
+    scene.fitView = nextFit;
+    store.updateView(nextFit);
+    return;
+  }
   renderer.draw();
+}
+
+function viewsAlmostEqual(a, b, epsilon = 0.75) {
+  if (!a || !b) {
+    return false;
+  }
+  const scaleA = Number.isFinite(a.scale) ? a.scale : 1;
+  const scaleB = Number.isFinite(b.scale) ? b.scale : 1;
+  const scaleDiff = Math.abs(scaleA - scaleB);
+  const offsetDiff = Math.hypot(
+    (a.offsetX ?? 0) - (b.offsetX ?? 0),
+    (a.offsetY ?? 0) - (b.offsetY ?? 0),
+  );
+  return scaleDiff < 1e-3 && offsetDiff < epsilon;
 }
 
 window.addEventListener('resize', resizeCanvas);
@@ -147,8 +168,15 @@ async function loadGraph({ manual = false, silent = false } = {}) {
     store.setMeta(meta);
     const timestamp = new Date((payload.generated_at ?? Date.now() / 1000) * 1000);
     store.setStatus(`Last update: ${timestamp.toLocaleTimeString()}`);
+    const previousScene = store.getScene();
     const scene = buildScene(graph, canvas.width, canvas.height);
     store.setScene(scene);
+    const currentView = store.getView();
+    const shouldAutoFit =
+      changed || !previousScene || viewsAlmostEqual(currentView, previousScene?.fitView);
+    if (scene.fitView && shouldAutoFit) {
+      store.updateView(scene.fitView);
+    }
     if (changed) {
       store.resetSelection();
       store.setHover(null);
