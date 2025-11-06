@@ -135,6 +135,73 @@ function isHiddenName(name) {
   return HIDDEN_NAME_PATTERNS.some(pattern => pattern.test(name));
 }
 
+function collectCandidateNames(primaryName, nodeInfo, labelLines) {
+  const candidates = new Set();
+  const add = value => {
+    if (typeof value !== 'string') {
+      return;
+    }
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return;
+    }
+    candidates.add(trimmed);
+    if (trimmed.includes('\n')) {
+      trimmed
+        .split('\n')
+        .map(part => part.trim())
+        .filter(Boolean)
+        .forEach(part => candidates.add(part));
+    }
+  };
+  add(primaryName);
+  add(nodeInfo?.name);
+  add(nodeInfo?.id);
+  add(nodeInfo?.label);
+  if (Array.isArray(labelLines)) {
+    labelLines.forEach(line => add(line?.text));
+  }
+  return candidates;
+}
+
+function hasTopicMatch(candidates, topicNames) {
+  if (!candidates?.size || !topicNames?.size) {
+    return false;
+  }
+  for (const candidate of candidates) {
+    const variations = buildTopicVariations(candidate);
+    for (const variation of variations) {
+      if (topicNames.has(variation)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function buildTopicVariations(value) {
+  const variants = new Set();
+  const add = v => {
+    if (!v || typeof v !== 'string') {
+      return;
+    }
+    const trimmed = v.trim();
+    if (trimmed) {
+      variants.add(trimmed);
+    }
+  };
+  add(value);
+  if (typeof value === 'string') {
+    value.split('\n').forEach(add);
+    value.split('•').forEach(add);
+    const whitespaceSplit = value.split(/\s+/);
+    if (whitespaceSplit.length) {
+      add(whitespaceSplit[0]);
+    }
+  }
+  return variants;
+}
+
 function remapLayout(layout, idMapping) {
   if (!idMapping) {
     return layout;
@@ -215,6 +282,8 @@ export function buildScene(graph, canvasWidth, canvasHeight) {
     const width = scaler.scaleLength(nodeInfo.width);
     const height = scaler.scaleLength(nodeInfo.height);
     const labelLines = decodeLabelLines(nodeInfo.rawLabel, nodeInfo.label || name, name);
+    const candidateNames = collectCandidateNames(name, nodeInfo, labelLines);
+    const isTopic = hasTopicMatch(candidateNames, topicNames);
     const fontSize = computeFontSizePx(nodeInfo, scaler);
     const lineHeight = Math.max(fontSize * BASE_LINE_HEIGHT_RATIO, fontSize);
     const approxCharWidth = fontSize * 0.6;
@@ -222,7 +291,6 @@ export function buildScene(graph, canvasWidth, canvasHeight) {
       const length = typeof line.text === 'string' ? line.text.length : 0;
       return Math.max(max, length * approxCharWidth);
     }, fontSize);
-    const isTopic = topicNames.has(name);
     const padding = isTopic ? 20 : 16;
     const estimatedWidth = Math.max(width, estimatedTextWidth + padding);
     const estimatedHeight = Math.max(
@@ -242,7 +310,7 @@ export function buildScene(graph, canvasWidth, canvasHeight) {
       fontFamily: BASE_FONT_FAMILY,
       name,
     };
-    if (topicNames.has(name)) {
+    if (isTopic) {
       topics.set(name, geometry);
       lookup.set(name, { type: 'topic', geometry });
     } else {

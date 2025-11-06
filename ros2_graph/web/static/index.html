@@ -11,11 +11,161 @@
     <div id="meta">waiting for data…</div>
     <div id="status">initializing…</div>
     <button id="refreshBtn" type="button">Refresh now</button>
+    <button
+      id="settingsBtn"
+      class="icon-button"
+      type="button"
+      aria-haspopup="dialog"
+      aria-controls="settingsOverlay"
+      aria-expanded="false"
+      title="Open settings"
+    >
+      &#9881;
+    </button>
   </header>
   <div id="canvasContainer">
     <canvas id="graphCanvas"></canvas>
     <canvas id="overlayCanvas"></canvas>
     <div id="contextMenu" class="hidden"></div>
+  </div>
+  <div id="settingsOverlay" class="settings-overlay" aria-hidden="true">
+    <div
+      id="settingsOverlayDialog"
+      class="settings-overlay__panel"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settingsOverlayTitle"
+      tabindex="-1"
+    >
+      <header class="settings-overlay__header">
+        <h2 id="settingsOverlayTitle" class="settings-overlay__title">Settings</h2>
+        <button
+          id="settingsOverlayClose"
+          class="settings-overlay__close icon-button"
+          type="button"
+          aria-label="Close settings"
+        >
+          &times;
+        </button>
+      </header>
+      <div id="settingsOverlayBody" class="settings-overlay__body">
+        <form id="settingsForm" class="settings-form" autocomplete="off">
+          <fieldset class="settings-form__fieldset">
+            <legend>Theme</legend>
+            <label class="settings-form__option">
+              <input type="radio" name="settingsTheme" value="dark">
+              <span>Dark</span>
+            </label>
+            <label class="settings-form__option">
+              <input type="radio" name="settingsTheme" value="light">
+              <span>Light</span>
+            </label>
+            <label class="settings-form__option">
+              <input type="radio" name="settingsTheme" value="custom">
+              <span>Custom</span>
+            </label>
+          </fieldset>
+          <section id="customThemeSection" class="settings-form__custom" hidden>
+          <p class="settings-form__note">Adjust the palette to build a custom theme. Changes apply instantly while custom mode is active.</p>
+          <div class="settings-form__field">
+            <label for="customThemeScheme">Base variant</label>
+            <select id="customThemeScheme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Interface</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customBg">
+                <span>Background</span>
+                <input type="color" id="customBg" name="customBg" value="#0d1117">
+              </label>
+              <label class="settings-form__color" for="customPanel">
+                <span>Panel</span>
+                <input type="color" id="customPanel" name="customPanel" value="#161b22">
+              </label>
+              <label class="settings-form__color" for="customText">
+                <span>Text</span>
+                <input type="color" id="customText" name="customText" value="#e6edf3">
+              </label>
+              <label class="settings-form__color" for="customAccent">
+                <span>Accent</span>
+                <input type="color" id="customAccent" name="customAccent" value="#3fb950">
+              </label>
+              <label class="settings-form__color" for="customAccentSecondary">
+                <span>Accent Secondary</span>
+                <input type="color" id="customAccentSecondary" name="customAccentSecondary" value="#58a6ff">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Edges</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphEdge">
+                <span>Base</span>
+                <input type="color" id="customGraphEdge" name="customGraphEdge" value="#3a4b5e">
+              </label>
+              <label class="settings-form__color" for="customGraphEdgeHover">
+                <span>Hover</span>
+                <input type="color" id="customGraphEdgeHover" name="customGraphEdgeHover" value="#5cb2ff">
+              </label>
+              <label class="settings-form__color" for="customGraphEdgeSelect">
+                <span>Select</span>
+                <input type="color" id="customGraphEdgeSelect" name="customGraphEdgeSelect" value="#ffab3d">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Nodes</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphNodeFill">
+                <span>Base Fill</span>
+                <input type="color" id="customGraphNodeFill" name="customGraphNodeFill" value="#2b4a65">
+              </label>
+              <label class="settings-form__color" for="customGraphNodeHover">
+                <span>Hover Fill</span>
+                <input type="color" id="customGraphNodeHover" name="customGraphNodeHover" value="#3f6d90">
+              </label>
+              <label class="settings-form__color" for="customGraphNodeSelect">
+                <span>Select Fill</span>
+                <input type="color" id="customGraphNodeSelect" name="customGraphNodeSelect" value="#4b7da1">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Topics</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphTopicFill">
+                <span>Base Fill</span>
+                <input type="color" id="customGraphTopicFill" name="customGraphTopicFill" value="#14202c">
+              </label>
+              <label class="settings-form__color" for="customGraphTopicHover">
+                <span>Hover Fill</span>
+                <input type="color" id="customGraphTopicHover" name="customGraphTopicHover" value="#162331">
+              </label>
+              <label class="settings-form__color" for="customGraphTopicSelect">
+                <span>Select Fill</span>
+                <input type="color" id="customGraphTopicSelect" name="customGraphTopicSelect" value="#1f2e41">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Labels</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphLabelText">
+                <span>Text</span>
+                <input type="color" id="customGraphLabelText" name="customGraphLabelText" value="#f0f6fc">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__actions">
+            <button type="button" id="customThemeReset" class="secondary">Reset custom theme</button>
+          </div>
+        </section>
+      </form>
+      </div>
+    </div>
   </div>
   <div id="parameterEditor" class="parameter-editor hidden" aria-hidden="true">
     <div class="parameter-editor__backdrop"></div>

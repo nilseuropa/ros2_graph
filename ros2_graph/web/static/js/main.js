@@ -15,6 +15,7 @@ import { NodeToolsApi } from './api/nodeToolsApi.js';
 import { TopicToolsApi } from './api/topicToolsApi.js';
 import { ActionController } from './controllers/actionController.js';
 import { TopicEchoController } from './controllers/topicEchoController.js';
+import { ThemeManager } from './ui/themeManager.js';
 
 const canvas = document.getElementById('graphCanvas');
 const overlayCanvas = document.getElementById('overlayCanvas');
@@ -23,6 +24,22 @@ const statusEl = document.getElementById('status');
 const refreshBtn = document.getElementById('refreshBtn');
 const contextMenuEl = document.getElementById('contextMenu');
 const canvasContainer = document.getElementById('canvasContainer');
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsOverlay = document.getElementById('settingsOverlay');
+const settingsOverlayDialog = document.getElementById('settingsOverlayDialog');
+const settingsOverlayClose = document.getElementById('settingsOverlayClose');
+const settingsOverlayBody = document.getElementById('settingsOverlayBody');
+
+const {
+  form: settingsForm,
+  customSection: customThemeSection,
+  schemeSelect: customThemeScheme,
+  resetButton: customThemeResetBtn,
+  colorInputs: customThemeInputs,
+} = ensureSettingsForm(settingsOverlayBody);
+
+const themeManager = new ThemeManager();
+themeManager.init();
 
 const store = new Store();
 const renderer = new GraphRenderer(canvas);
@@ -64,7 +81,276 @@ const interactionController = new InteractionController(canvas, store, viewContr
   topicEcho: topicEchoController,
 });
 
+function handleThemeChange(state) {
+  updateSettingsForm(state);
+  if (state?.graphPalette) {
+    renderer.setPalette(state.graphPalette);
+  }
+}
+
+themeManager.subscribe(handleThemeChange);
+handleThemeChange(themeManager.getState());
+
 let refreshTimer = null;
+
+function ensureSettingsForm(container) {
+  if (!container) {
+    return {
+      form: null,
+      customSection: null,
+      schemeSelect: null,
+      resetButton: null,
+      colorInputs: {},
+    };
+  }
+  if (!container.querySelector('#settingsForm')) {
+    container.innerHTML = `
+      <form id="settingsForm" class="settings-form" autocomplete="off">
+        <fieldset class="settings-form__fieldset">
+          <legend>Theme</legend>
+          <label class="settings-form__option">
+            <input type="radio" name="settingsTheme" value="dark">
+            <span>Dark</span>
+          </label>
+          <label class="settings-form__option">
+            <input type="radio" name="settingsTheme" value="light">
+            <span>Light</span>
+          </label>
+          <label class="settings-form__option">
+            <input type="radio" name="settingsTheme" value="custom">
+            <span>Custom</span>
+          </label>
+        </fieldset>
+        <section id="customThemeSection" class="settings-form__custom" hidden>
+          <p class="settings-form__note">
+            Adjust the palette to build a custom theme. Changes apply instantly while custom mode is active.
+          </p>
+          <div class="settings-form__field">
+            <label for="customThemeScheme">Base variant</label>
+            <select id="customThemeScheme">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Interface</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customBg">
+                <span>Background</span>
+                <input type="color" id="customBg" name="customBg" value="#0d1117">
+              </label>
+              <label class="settings-form__color" for="customPanel">
+                <span>Panel</span>
+                <input type="color" id="customPanel" name="customPanel" value="#161b22">
+              </label>
+              <label class="settings-form__color" for="customText">
+                <span>Text</span>
+                <input type="color" id="customText" name="customText" value="#e6edf3">
+              </label>
+              <label class="settings-form__color" for="customAccent">
+                <span>Accent</span>
+                <input type="color" id="customAccent" name="customAccent" value="#3fb950">
+              </label>
+              <label class="settings-form__color" for="customAccentSecondary">
+                <span>Accent Secondary</span>
+                <input type="color" id="customAccentSecondary" name="customAccentSecondary" value="#58a6ff">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Edges</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphEdge">
+                <span>Base</span>
+                <input type="color" id="customGraphEdge" name="customGraphEdge" value="#3a4b5e">
+              </label>
+              <label class="settings-form__color" for="customGraphEdgeHover">
+                <span>Hover</span>
+                <input type="color" id="customGraphEdgeHover" name="customGraphEdgeHover" value="#5cb2ff">
+              </label>
+              <label class="settings-form__color" for="customGraphEdgeSelect">
+                <span>Select</span>
+                <input type="color" id="customGraphEdgeSelect" name="customGraphEdgeSelect" value="#ffab3d">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Nodes</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphNodeFill">
+                <span>Base Fill</span>
+                <input type="color" id="customGraphNodeFill" name="customGraphNodeFill" value="#2b4a65">
+              </label>
+              <label class="settings-form__color" for="customGraphNodeHover">
+                <span>Hover Fill</span>
+                <input type="color" id="customGraphNodeHover" name="customGraphNodeHover" value="#3f6d90">
+              </label>
+              <label class="settings-form__color" for="customGraphNodeSelect">
+                <span>Select Fill</span>
+                <input type="color" id="customGraphNodeSelect" name="customGraphNodeSelect" value="#4b7da1">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Topics</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphTopicFill">
+                <span>Base Fill</span>
+                <input type="color" id="customGraphTopicFill" name="customGraphTopicFill" value="#14202c">
+              </label>
+              <label class="settings-form__color" for="customGraphTopicHover">
+                <span>Hover Fill</span>
+                <input type="color" id="customGraphTopicHover" name="customGraphTopicHover" value="#162331">
+              </label>
+              <label class="settings-form__color" for="customGraphTopicSelect">
+                <span>Select Fill</span>
+                <input type="color" id="customGraphTopicSelect" name="customGraphTopicSelect" value="#1f2e41">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__group">
+            <h3 class="settings-form__group-title">Graph Labels</h3>
+            <div class="settings-form__colors">
+              <label class="settings-form__color" for="customGraphLabelText">
+                <span>Text</span>
+                <input type="color" id="customGraphLabelText" name="customGraphLabelText" value="#f0f6fc">
+              </label>
+            </div>
+          </div>
+          <div class="settings-form__actions">
+            <button type="button" id="customThemeReset" class="secondary">Reset custom theme</button>
+          </div>
+        </section>
+      </form>
+    `;
+  }
+  const form = container.querySelector('#settingsForm');
+  const customSection = container.querySelector('#customThemeSection');
+  const schemeSelect = container.querySelector('#customThemeScheme');
+  const resetButton = container.querySelector('#customThemeReset');
+  const colorInputs = {
+    bg: container.querySelector('#customBg'),
+    panel: container.querySelector('#customPanel'),
+    text: container.querySelector('#customText'),
+    accent: container.querySelector('#customAccent'),
+    accentSecondary: container.querySelector('#customAccentSecondary'),
+    graphEdge: container.querySelector('#customGraphEdge'),
+    graphEdgeHover: container.querySelector('#customGraphEdgeHover'),
+    graphEdgeSelect: container.querySelector('#customGraphEdgeSelect'),
+    graphNodeFill: container.querySelector('#customGraphNodeFill'),
+    graphNodeHover: container.querySelector('#customGraphNodeHover'),
+    graphNodeSelect: container.querySelector('#customGraphNodeSelect'),
+    graphTopicFill: container.querySelector('#customGraphTopicFill'),
+    graphTopicHover: container.querySelector('#customGraphTopicHover'),
+    graphTopicSelect: container.querySelector('#customGraphTopicSelect'),
+    graphLabelText: container.querySelector('#customGraphLabelText'),
+  };
+  return { form, customSection, schemeSelect, resetButton, colorInputs };
+}
+
+function isSettingsOverlayOpen() {
+  return Boolean(settingsOverlay?.classList.contains('active'));
+}
+
+function updateSettingsForm(state = themeManager.getState()) {
+  if (!settingsForm) {
+    return;
+  }
+  const theme = state?.theme ?? themeManager.getTheme();
+  const custom = state?.custom ?? themeManager.getState().custom;
+  const themeRadios = settingsForm.querySelectorAll("input[name='settingsTheme']");
+  themeRadios.forEach(radio => {
+    radio.checked = radio.value === theme;
+  });
+  const isCustom = theme === 'custom';
+  if (customThemeSection) {
+    customThemeSection.hidden = !isCustom;
+  }
+  if (customThemeScheme) {
+    customThemeScheme.value = custom?.scheme ?? 'dark';
+    customThemeScheme.disabled = !isCustom;
+  }
+  if (customThemeResetBtn) {
+    customThemeResetBtn.disabled = !isCustom;
+  }
+  for (const [key, input] of Object.entries(customThemeInputs)) {
+    if (!input) {
+      continue;
+    }
+    input.disabled = !isCustom;
+    const value = custom?.colors?.[key];
+    if (value) {
+      input.value = value;
+    }
+  }
+}
+
+function openSettingsOverlay() {
+  if (!settingsOverlay) {
+    return;
+  }
+  updateSettingsForm();
+  settingsOverlay.classList.add('active');
+  settingsOverlay.setAttribute('aria-hidden', 'false');
+  if (settingsBtn) {
+    settingsBtn.setAttribute('aria-expanded', 'true');
+  }
+  window.setTimeout(() => {
+    settingsOverlayDialog?.focus();
+  }, 0);
+}
+
+function closeSettingsOverlay() {
+  if (!settingsOverlay) {
+    return;
+  }
+  if (!settingsOverlay.classList.contains('active')) {
+    return;
+  }
+  settingsOverlay.classList.remove('active');
+  settingsOverlay.setAttribute('aria-hidden', 'true');
+  if (settingsBtn) {
+    settingsBtn.setAttribute('aria-expanded', 'false');
+    settingsBtn.focus();
+  }
+}
+
+function handleSettingsFormChange(event) {
+  const target = event.target;
+  if (!target) {
+    return;
+  }
+  if (target instanceof HTMLInputElement && target.name === 'settingsTheme') {
+    themeManager.setTheme(target.value);
+    return;
+  }
+  if (target === customThemeScheme) {
+    if (themeManager.getTheme() !== 'custom') {
+      themeManager.setTheme('custom');
+    }
+    themeManager.setCustomScheme(customThemeScheme.value);
+  }
+}
+
+function handleSettingsFormInput(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement) || target.type !== 'color') {
+    return;
+  }
+  for (const [key, input] of Object.entries(customThemeInputs)) {
+    if (input === target) {
+      if (themeManager.getTheme() !== 'custom') {
+        themeManager.setTheme('custom');
+      }
+      themeManager.setCustomColor(key, target.value);
+      break;
+    }
+  }
+}
+
+function handleCustomThemeReset() {
+  themeManager.resetCustomTheme();
+}
 
 function resizeCanvas() {
   const header = document.querySelector('header');
@@ -198,6 +484,28 @@ function init() {
     setText(statusEl, 'Canvas elements missing from DOM.');
     return;
   }
+  if (settingsBtn && settingsOverlay) {
+    settingsBtn.addEventListener('click', () => {
+      openSettingsOverlay();
+    });
+    settingsOverlay.addEventListener('click', event => {
+      if (event.target === settingsOverlay) {
+        closeSettingsOverlay();
+      }
+    });
+  }
+  if (settingsOverlayClose) {
+    settingsOverlayClose.addEventListener('click', () => {
+      closeSettingsOverlay();
+    });
+  }
+  if (settingsForm) {
+    settingsForm.addEventListener('change', handleSettingsFormChange);
+    settingsForm.addEventListener('input', handleSettingsFormInput);
+  }
+  if (customThemeResetBtn) {
+    customThemeResetBtn.addEventListener('click', handleCustomThemeReset);
+  }
   renderer.setView(store.getView());
   renderer.setSelection(store.getSelection());
   resizeCanvas();
@@ -209,3 +517,9 @@ if (document.readyState === 'loading') {
 } else {
   init();
 }
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && isSettingsOverlayOpen()) {
+    closeSettingsOverlay();
+  }
+});

@@ -1,31 +1,63 @@
-import {
-  BASE_STROKE_WIDTH,
-  MIN_STROKE_WIDTH,
-  MAX_STROKE_WIDTH,
-  SELECT_EDGE_COLOR,
-  SELECT_NODE,
-  SELECT_TOPIC,
-  HOVER_NODE,
-  HOVER_TOPIC,
-  HOVER_EDGE_COLOR,
-  BASE_EDGE_COLOR,
-  BASE_FONT_FAMILY,
-} from '../constants/index.js';
+import { BASE_STROKE_WIDTH, MIN_STROKE_WIDTH, MAX_STROKE_WIDTH, BASE_FONT_FAMILY } from '../constants/index.js';
 import { arrowHeadSize, drawLabel } from '../layout/graphviz.js';
 import { computeFitView } from './sceneBuilder.js';
 
-const DEFAULT_NODE_FILL = '#2b4a65';
-const DEFAULT_TOPIC_FILL = '#14202c';
-const MAX_NODE_LUMINANCE = 0.42;
-
-const NAMED_COLOR_MAP = {
-  white: '#ffffff',
-  black: '#000000',
-  lightgray: '#d3d3d3',
-  lightgrey: '#d3d3d3',
-  gray: '#808080',
-  grey: '#808080',
+const DEFAULT_GRAPH_PALETTE = {
+  edge: '#3a4b5e',
+  edgeHover: '#5cb2ff',
+  edgeSelect: '#ffab3d',
+  node: {
+    baseFill: '#2b4a65',
+    hoverFill: '#3f6d90',
+    selectFill: '#4b7da1',
+  },
+  topic: {
+    baseFill: '#14202c',
+    hoverFill: '#162331',
+    selectFill: '#1f2e41',
+  },
+  labelText: '#f0f6fc',
 };
+
+function cloneGraphPalette(palette) {
+  const source = palette || DEFAULT_GRAPH_PALETTE;
+  return {
+    edge: source.edge,
+    edgeHover: source.edgeHover,
+    edgeSelect: source.edgeSelect,
+    node: {
+      baseFill: source.node?.baseFill,
+      hoverFill: source.node?.hoverFill,
+      selectFill: source.node?.selectFill,
+    },
+    topic: {
+      baseFill: source.topic?.baseFill,
+      hoverFill: source.topic?.hoverFill,
+      selectFill: source.topic?.selectFill,
+    },
+    labelText: source.labelText,
+  };
+}
+
+function normalizeGraphPalette(palette) {
+  const source = cloneGraphPalette(palette);
+  return {
+    edge: source.edge ?? DEFAULT_GRAPH_PALETTE.edge,
+    edgeHover: source.edgeHover ?? DEFAULT_GRAPH_PALETTE.edgeHover,
+    edgeSelect: source.edgeSelect ?? DEFAULT_GRAPH_PALETTE.edgeSelect,
+    node: {
+      baseFill: source.node.baseFill ?? DEFAULT_GRAPH_PALETTE.node.baseFill,
+      hoverFill: source.node.hoverFill ?? DEFAULT_GRAPH_PALETTE.node.hoverFill,
+      selectFill: source.node.selectFill ?? DEFAULT_GRAPH_PALETTE.node.selectFill,
+    },
+    topic: {
+      baseFill: source.topic.baseFill ?? DEFAULT_GRAPH_PALETTE.topic.baseFill,
+      hoverFill: source.topic.hoverFill ?? DEFAULT_GRAPH_PALETTE.topic.hoverFill,
+      selectFill: source.topic.selectFill ?? DEFAULT_GRAPH_PALETTE.topic.selectFill,
+    },
+    labelText: source.labelText ?? DEFAULT_GRAPH_PALETTE.labelText,
+  };
+}
 
 export class GraphRenderer {
   constructor(canvas) {
@@ -35,6 +67,7 @@ export class GraphRenderer {
     this.view = { scale: 1, offsetX: 0, offsetY: 0 };
     this.selection = { nodes: new Set(), topics: new Set(), edges: new Set() };
     this.hover = null;
+    this.palette = normalizeGraphPalette();
   }
 
   setScene(scene) {
@@ -54,6 +87,11 @@ export class GraphRenderer {
 
   setHover(hover) {
     this.hover = hover;
+    this.draw();
+  }
+
+  setPalette(palette) {
+    this.palette = normalizeGraphPalette(palette);
     this.draw();
   }
 
@@ -160,6 +198,7 @@ export class GraphRenderer {
     const strokeWidth = this.getStrokeWidth();
     const selectedEdges = this.selection?.edges ?? new Set();
     const hoverEdges = this.hover?.edges ?? new Set();
+    const palette = this.palette;
 
     for (const edge of this.scene.edges) {
       const key = `${edge.tail}->${edge.head}`;
@@ -169,10 +208,10 @@ export class GraphRenderer {
       ctx.save();
       ctx.lineWidth = strokeWidth;
       ctx.strokeStyle = isSelected
-        ? SELECT_EDGE_COLOR
+        ? palette.edgeSelect
         : isHover
-        ? HOVER_EDGE_COLOR
-        : BASE_EDGE_COLOR;
+        ? palette.edgeHover
+        : palette.edge;
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath();
       const [first, ...rest] = points;
@@ -501,27 +540,34 @@ export class GraphRenderer {
     const selectedTopics = this.selection?.topics ?? new Set();
     const hoverNodes = this.hover?.nodes ?? new Set();
     const hoverTopics = this.hover?.topics ?? new Set();
+    const palette = this.palette;
 
     this.scene.nodes.forEach((geometry, name) => {
       const highlight = selectedNodes.has(name)
-        ? { stroke: SELECT_NODE.stroke, fill: SELECT_NODE.fill }
+        ? { stroke: palette.edgeSelect, fill: palette.node.selectFill }
         : hoverNodes.has(name)
-        ? { stroke: HOVER_NODE.stroke, fill: HOVER_NODE.fill }
-        : { stroke: BASE_EDGE_COLOR, fill: ensureNodeFill(geometry.fillColor) };
-      this.drawEllipse(geometry, highlight);
+        ? { stroke: palette.edgeHover, fill: palette.node.hoverFill }
+        : {
+            stroke: palette.edge,
+            fill: palette.node.baseFill,
+          };
+      this.drawEllipse(geometry, highlight, palette.labelText);
     });
 
     this.scene.topics.forEach((geometry, name) => {
       const highlight = selectedTopics.has(name)
-        ? { stroke: SELECT_TOPIC.stroke, fill: SELECT_TOPIC.fill }
+        ? { stroke: palette.edgeSelect, fill: palette.topic.selectFill }
         : hoverTopics.has(name)
-        ? { stroke: HOVER_TOPIC.stroke, fill: HOVER_TOPIC.fill }
-        : { stroke: BASE_EDGE_COLOR, fill: ensureTopicFill(geometry.fillColor) };
-      this.drawRoundedRect(geometry, highlight);
+        ? { stroke: palette.edgeHover, fill: palette.topic.hoverFill }
+        : {
+            stroke: palette.edge,
+            fill: palette.topic.baseFill,
+          };
+      this.drawRoundedRect(geometry, highlight, palette.labelText);
     });
   }
 
-  drawEllipse(geometry, highlight) {
+  drawEllipse(geometry, highlight, textColor) {
     const { ctx } = this;
     ctx.save();
     ctx.lineWidth = this.getStrokeWidth();
@@ -542,11 +588,12 @@ export class GraphRenderer {
     drawLabel(ctx, geometry.labelLines, geometry.center, geometry.width, {
       fontSize: geometry.fontSize,
       lineHeight: geometry.lineHeight,
+      color: textColor,
     });
     ctx.restore();
   }
 
-  drawRoundedRect(geometry, highlight) {
+  drawRoundedRect(geometry, highlight, textColor) {
     const { ctx } = this;
     const radius = Math.min(12, Math.min(geometry.width, geometry.height) / 4);
     const x = geometry.center.x - geometry.width / 2;
@@ -576,6 +623,7 @@ export class GraphRenderer {
     drawLabel(ctx, geometry.labelLines, geometry.center, geometry.width, {
       fontSize: geometry.fontSize,
       lineHeight: geometry.lineHeight,
+      color: textColor,
     });
     ctx.restore();
   }
@@ -611,90 +659,4 @@ export class GraphRenderer {
     geometry.lineHeight = lineHeight;
     geometry.fontSize = fontSize;
   }
-}
-
-function ensureNodeFill(color) {
-  const parsed = parseCssColor(color);
-  if (!parsed) {
-    return DEFAULT_NODE_FILL;
-  }
-  const luminance = relativeLuminance(parsed);
-  if (luminance > MAX_NODE_LUMINANCE) {
-    return DEFAULT_NODE_FILL;
-  }
-  return rgbToHex(parsed);
-}
-
-function ensureTopicFill(_color) {
-  return DEFAULT_TOPIC_FILL;
-}
-
-function parseCssColor(value) {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const trimmed = value.trim().toLowerCase();
-  if (!trimmed || trimmed === 'none') {
-    return null;
-  }
-  if (NAMED_COLOR_MAP[trimmed]) {
-    return parseHexColor(NAMED_COLOR_MAP[trimmed]);
-  }
-  if (trimmed.startsWith('#')) {
-    return parseHexColor(trimmed);
-  }
-  const rgbMatch = trimmed.match(/^rgba?\(\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)(?:\s*,\s*([0-9.]+))?\s*\)$/);
-  if (rgbMatch) {
-    return {
-      r: clampChannel(parseInt(rgbMatch[1], 10)),
-      g: clampChannel(parseInt(rgbMatch[2], 10)),
-      b: clampChannel(parseInt(rgbMatch[3], 10)),
-    };
-  }
-  return null;
-}
-
-function parseHexColor(value) {
-  const hex = value.startsWith('#') ? value.slice(1) : value;
-  if (hex.length === 3) {
-    const r = parseInt(hex[0] + hex[0], 16);
-    const g = parseInt(hex[1] + hex[1], 16);
-    const b = parseInt(hex[2] + hex[2], 16);
-    return { r, g, b };
-  }
-  if (hex.length === 6) {
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    if ([r, g, b].some(channel => Number.isNaN(channel))) {
-      return null;
-    }
-    return { r, g, b };
-  }
-  return null;
-}
-
-function clampChannel(value) {
-  if (!Number.isFinite(value)) {
-    return 0;
-  }
-  return Math.max(0, Math.min(255, value));
-}
-
-function relativeLuminance({ r, g, b }) {
-  const [rl, gl, bl] = [r, g, b].map(channel => {
-    const srgb = channel / 255;
-    return srgb <= 0.04045 ? srgb / 12.92 : ((srgb + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * rl + 0.7152 * gl + 0.0722 * bl;
-}
-
-function rgbToHex({ r, g, b }) {
-  return `#${channelToHex(r)}${channelToHex(g)}${channelToHex(b)}`;
-}
-
-function channelToHex(value) {
-  const clamped = clampChannel(value);
-  const hex = clamped.toString(16);
-  return hex.length === 1 ? `0${hex}` : hex;
 }

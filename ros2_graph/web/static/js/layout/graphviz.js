@@ -204,12 +204,13 @@ export function decodeLabelLines(rawLabel, fallback, nodeName) {
   return lines;
 }
 
-export function drawLabel(ctx, lines, center, width, { fontSize, lineHeight }) {
+export function drawLabel(ctx, lines, center, width, { fontSize, lineHeight, color }) {
   const effectiveFontSize = clamp(fontSize || BASE_FONT_SIZE, MIN_FONT_SIZE_PX, 48);
   const effectiveLineHeight = lineHeight ?? effectiveFontSize * BASE_LINE_HEIGHT_RATIO;
+  const fillColor = typeof color === 'string' && color.trim() ? color : '#f0f6fc';
   ctx.save();
   ctx.font = `${effectiveFontSize}px ${BASE_FONT_FAMILY}`;
-  ctx.fillStyle = '#f0f6fc';
+  ctx.fillStyle = fillColor;
   ctx.textBaseline = 'middle';
   const totalHeight = Math.max(lines.length * effectiveLineHeight, effectiveLineHeight);
   const leftX = center.x - width / 2 + 6;
