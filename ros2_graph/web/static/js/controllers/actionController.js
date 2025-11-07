@@ -48,12 +48,6 @@ export class ActionController {
     if (!action || !target) {
       return;
     }
-    if (action !== 'topic-echo') {
-      await this.topicEcho?.stop({ quiet: true });
-    }
-    if (action !== 'topic-plot') {
-      await this.topicPlot?.stop();
-    }
     try {
       switch (action) {
         case 'node-info':
@@ -72,10 +66,10 @@ export class ActionController {
           await this.showTopicStats(resolveTopicName(target), target.peerName);
           break;
         case 'topic-plot':
-          await this.topicPlot?.start(resolveTopicName(target));
+          await this.topicPlot?.toggle(resolveTopicName(target));
           break;
         case 'topic-echo':
-          await this.startTopicEcho(resolveTopicName(target), target.peerName);
+          await this.toggleTopicEcho(resolveTopicName(target), target.peerName);
           break;
         default:
           this.statusBar?.setStatus(`Unknown action: ${action}`);
@@ -263,12 +257,17 @@ export class ActionController {
     this.statusBar?.setStatus(`Statistics ready for ${topicName}`);
   }
 
-  startTopicEcho(topicName, peerName) {
-    if (!this.topicEcho) {
+  async toggleTopicEcho(topicName, peerName) {
+    if (!this.topicEcho || !topicName) {
       this.statusBar?.setStatus('Echo not available');
       return;
     }
-    return this.topicEcho.start(topicName, peerName);
+    if (this.topicEcho.isActive(topicName, peerName)) {
+      await this.topicEcho.stop({ quiet: true });
+      this.statusBar?.setStatus('Echo stopped');
+      return;
+    }
+    await this.topicEcho.start(topicName, peerName);
   }
 
   renderNodeInfo(nodeName, summary, featureSections = []) {

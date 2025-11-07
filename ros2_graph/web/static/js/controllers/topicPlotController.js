@@ -20,30 +20,24 @@ export class TopicPlotController {
     this.topicApi = topicApi;
     this.overlay = overlay;
     this.statusBar = statusBar;
-    this.state = {
-      topicName: null,
-      schemas: [],
-      selectionOverlayId: null,
-      chartOverlayId: null,
-      selectedType: null,
-      datasets: [],
-      streamId: null,
-      pollTimer: null,
-      active: false,
-    };
-    this.chartView = null;
+    this.state = new Map();
     this.boundDraw = () => this.drawChart();
-    this.preview = {
-      streamId: null,
-      topic: null,
-      type: null,
-      fields: [],
-    };
+    this.previewStreams = new Map();
+  }
+
+  async toggle(topicName) {
+    const key = buildOverlayIdForTopic(topicName);
+    if (this.state.has(key)) {
+      await this.stop(topicName);
+      return;
+    }
+    await this.start(topicName);
   }
 
   async start(topicName) {
-    await this.stop();
-    this.state.topicName = topicName;
+    await this.stop(topicName);
+    const context = createPlotContext(topicName);
+    this.state.set(context.id, context);
     this.statusBar?.setStatus(`Loading schema for ${topicName}…`);
     try {
       const payload = await this.topicApi.getSchema(topicName, { timeout: 5000 });
@@ -69,58 +63,59 @@ export class TopicPlotController {
         }))
         .filter(entry => entry.fields.length > 0);
       if (!entries.length) {
-        this.showInfoOverlay('Plot', topicName, ['No numeric fields available for plotting.']);
+        this.showInfoOverlay(context);
         this.statusBar?.setStatus(`Nothing to plot for ${topicName}`);
+        this.state.delete(context.id);
         return;
       }
-      this.state.schemas = entries;
-      this.showSelectionOverlay(entries);
+      context.schemas = entries;
+      this.showSelectionOverlay(context);
       this.statusBar?.setStatus(`Select fields to plot for ${topicName}`);
     } catch (error) {
       const message = error?.message || String(error);
       this.statusBar?.setStatus(`Failed to load schema: ${message}`);
+      this.state.delete(context.id);
     }
   }
 
-  async stop() {
-    await this.stopStreaming();
-    if (this.state.selectionOverlayId) {
-      this.overlay?.hide({ id: this.state.selectionOverlayId });
-      this.state.selectionOverlayId = null;
+  async stop(topicName) {
+    const contextId = topicName ? buildOverlayIdForTopic(topicName) : null;
+    if (contextId && this.state.has(contextId)) {
+      const context = this.state.get(contextId);
+      await this.stopStreaming(context);
+      await this.stopPreviewStream(context);
+      this.overlay?.hide({ id: context.selectionOverlayId });
+      this.overlay?.hide({ id: context.chartOverlayId });
+      this.state.delete(contextId);
+      return;
     }
-    await this.stopPreviewStream();
-    this.state.topicName = null;
-    this.state.schemas = [];
+    const entries = Array.from(this.state.values());
+    await Promise.all(entries.map(entry => this.stop(entry.topicName)));
   }
 
-  showInfoOverlay(title, subtitle, lines) {
-    const overlayId = buildSelectionOverlayId(this.state.topicName);
+  showInfoOverlay(context) {
+    const overlayId = buildSelectionOverlayId(context.topicName);
     this.overlay?.show(
       {
-        title,
-        subtitle,
+        title: 'Plot',
+        subtitle: context.topicName,
         sections: [
           {
             type: 'text',
-            text: Array.isArray(lines) ? lines : [lines],
+            text: ['No numeric fields available for plotting.'],
           },
         ],
       },
       { id: overlayId },
     );
     this.attachOverlayCloseHandler(overlayId, () => {
-      if (this.state.selectionOverlayId === overlayId) {
-        this.state.selectionOverlayId = null;
-      }
+      this.state.delete(context.id);
     });
-    this.state.selectionOverlayId = overlayId;
+    context.selectionOverlayId = overlayId;
   }
 
-  showSelectionOverlay(entries) {
-    const topicName = this.state.topicName;
-    if (!topicName) {
-      return;
-    }
+  showSelectionOverlay(context) {
+    const { topicName, schemas } = context;
     const overlayId = buildSelectionOverlayId(topicName);
     const form = document.createElement('form');
     form.className = 'topic-plot-selector';
