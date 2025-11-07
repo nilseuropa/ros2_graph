@@ -49,6 +49,7 @@ export class OverlayPanel {
       if (!overlay) {
         return;
       }
+      this.emitOverlayClose(overlay);
       overlay.root.remove();
       this.overlays.delete(options.id);
       if (this.dragState?.overlayId === options.id) {
@@ -59,7 +60,10 @@ export class OverlayPanel {
       }
       return;
     }
-    this.overlays.forEach(entry => entry.root.remove());
+    this.overlays.forEach(entry => {
+      this.emitOverlayClose(entry);
+      entry.root.remove();
+    });
     this.overlays.clear();
     this.endDrag();
     this.endResize();
@@ -221,6 +225,8 @@ export class OverlayPanel {
         this.renderTextSection(overlay.bodyEl, section);
       } else if (section.type === 'code') {
         this.renderCodeSection(overlay.bodyEl, section);
+      } else if (section.type === 'custom') {
+        this.renderCustomSection(overlay.bodyEl, section);
       }
     });
   }
@@ -301,6 +307,20 @@ export class OverlayPanel {
     pre.className = 'overlay-panel__code';
     pre.textContent = formatCode(section.code);
     wrapper.appendChild(pre);
+    container.appendChild(wrapper);
+  }
+
+  renderCustomSection(container, section) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'overlay-panel__section';
+    if (section.className) {
+      wrapper.classList.add(section.className);
+    }
+    if (typeof section.render === 'function') {
+      section.render(wrapper);
+    } else if (section.element instanceof Node) {
+      wrapper.appendChild(section.element);
+    }
     container.appendChild(wrapper);
   }
 
@@ -549,6 +569,18 @@ export class OverlayPanel {
       this.syncSize(overlay);
       this.ensureWithinBounds(overlay);
     });
+  }
+
+  emitOverlayClose(overlay) {
+    if (!overlay?.root?.isConnected) {
+      return;
+    }
+    overlay.root.dispatchEvent(
+      new CustomEvent('overlaypanel:close', {
+        detail: { id: overlay.id },
+        bubbles: true,
+      }),
+    );
   }
 
   generateId() {

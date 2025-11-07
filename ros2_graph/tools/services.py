@@ -29,7 +29,34 @@ def rosidl_slot_type_to_string(slot_type) -> str:
     if BasicType is not None and isinstance(slot_type, BasicType):
         return slot_type.typename
     if NamespacedType is not None and isinstance(slot_type, NamespacedType):
-        return "/".join((*slot_type.names, slot_type.name))
+        parts = []
+        namespace = []
+        names_attr = None
+        for attr_name in ("names", "namespaces"):
+            try:
+                names_attr = getattr(slot_type, attr_name)
+            except AttributeError:
+                continue
+            else:
+                break
+        try:
+            names = tuple(names_attr or ())
+        except ValueError:
+            names = ()
+        except TypeError:
+            names = ()
+        namespace.extend(names)
+        try:
+            base_name = getattr(slot_type, "name", "") or ""
+        except AttributeError:
+            base_name = ""
+        except ValueError:
+            base_name = ""
+        if base_name:
+            parts.append(base_name)
+        if parts:
+            return "/".join(parts)
+        return base_name or "unknown"
     return str(slot_type)
 
 
@@ -72,11 +99,34 @@ def rosidl_slot_maximum_size(slot_type) -> Optional[int]:
 def get_message_class_for_slot(slot_type):
     if NamespacedType is None or not isinstance(slot_type, NamespacedType):
         return None
+    names_attr = None
+    for attr_name in ("names", "namespaces"):
+        try:
+            names_attr = getattr(slot_type, attr_name)
+        except AttributeError:
+            continue
+        else:
+            break
+    try:
+        namespace = tuple(names_attr or ())
+    except (TypeError, ValueError):
+        namespace = ()
+    try:
+        base_name = getattr(slot_type, "name", "") or ""
+    except (AttributeError, ValueError):
+        base_name = ""
+    if not namespace and not base_name:
+        return None
     try:
         from rosidl_runtime_py.utilities import get_message  # type: ignore
     except ImportError:  # pragma: no cover - optional dependency
         return None
-    type_name = "/".join((*slot_type.names, slot_type.name))
+    parts = [*namespace]
+    if base_name:
+        parts.append(base_name)
+    type_name = "/".join(parts)
+    if not type_name:
+        return None
     try:
         return get_message(type_name)
     except (AttributeError, ModuleNotFoundError, ValueError):

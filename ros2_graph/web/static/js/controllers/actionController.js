@@ -27,6 +27,7 @@ export class ActionController {
     parameterEditor,
     serviceCaller,
     topicEcho,
+    topicPlot,
   }) {
     this.store = store;
     this.overlay = overlay;
@@ -36,6 +37,7 @@ export class ActionController {
     this.parameterEditor = parameterEditor;
     this.serviceCaller = serviceCaller;
     this.topicEcho = topicEcho;
+    this.topicPlot = topicPlot;
     this.nodeFeatureCache = new Map();
     if (this.overlay?.setActionHandler) {
       this.overlay.setActionHandler(action => this.handleOverlayAction(action));
@@ -48,6 +50,9 @@ export class ActionController {
     }
     if (action !== 'topic-echo') {
       await this.topicEcho?.stop({ quiet: true });
+    }
+    if (action !== 'topic-plot') {
+      await this.topicPlot?.stop();
     }
     try {
       switch (action) {
@@ -65,6 +70,9 @@ export class ActionController {
           break;
         case 'topic-stats':
           await this.showTopicStats(resolveTopicName(target), target.peerName);
+          break;
+        case 'topic-plot':
+          await this.topicPlot?.start(resolveTopicName(target));
           break;
         case 'topic-echo':
           await this.startTopicEcho(resolveTopicName(target), target.peerName);

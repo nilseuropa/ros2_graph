@@ -895,3 +895,160 @@ textarea {
   font-family: 'Fira Code', monospace;
   font-size: 0.9rem;
 }
+
+.topic-plot-selector__section {
+  padding: 0;
+}
+
+.topic-plot-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  width: 100%;
+}
+
+.topic-plot-selector__control label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(var(--text-rgb), 0.7);
+}
+
+.topic-plot-selector__select {
+  border-radius: 6px;
+  border: 1px solid rgba(var(--accent-secondary-rgb), 0.4);
+  padding: 0.45rem 0.5rem;
+  background: rgba(var(--panel-rgb), 0.9);
+  color: var(--text);
+}
+
+.topic-plot-selector__count {
+  font-size: 0.85rem;
+  color: rgba(var(--text-rgb), 0.75);
+}
+
+.topic-plot-selector__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 0.2rem;
+}
+
+.topic-plot-selector__option {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 0.5rem 0.65rem;
+  border-radius: 8px;
+  border: 1px solid rgba(var(--accent-secondary-rgb), 0.25);
+  background: rgba(var(--panel-rgb), 0.85);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.topic-plot-selector__option input {
+  margin-top: 0.25rem;
+}
+
+.topic-plot-selector__option--selected {
+  border-color: rgba(var(--accent-rgb), 0.6);
+  background: rgba(var(--accent-rgb), 0.12);
+}
+
+.topic-plot-selector__option-content {
+  flex: 1;
+}
+
+.topic-plot-selector__option-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.topic-plot-selector__option-hint {
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.topic-plot-selector__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.topic-plot {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.topic-plot__legend {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.topic-plot__legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  background: rgba(var(--panel-rgb), 0.8);
+  border: 1px solid rgba(var(--accent-secondary-rgb), 0.15);
+}
+
+.topic-plot__legend-swatch {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.topic-plot__legend-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.topic-plot__legend-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.topic-plot__legend-hint {
+  font-size: 0.75rem;
+  opacity: 0.7;
+}
+
+.topic-plot__legend-value {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.9rem;
+}
+
+.topic-plot__canvas-wrapper {
+  position: relative;
+  width: 100%;
+  min-height: 260px;
+  border-radius: 10px;
+  background: rgba(var(--bg-rgb), 0.65);
+  border: 1px solid rgba(var(--accent-secondary-rgb), 0.25);
+  overflow: hidden;
+}
+
+.topic-plot__canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.topic-plot__status {
+  font-size: 0.85rem;
+  color: rgba(var(--text-rgb), 0.75);
+}
+
+.topic-plot__section {
+  padding: 0;
+}

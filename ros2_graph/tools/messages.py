@@ -167,42 +167,54 @@ def describe_message_type(message_cls, visited: Optional[Set[str]] = None) -> Li
     slot_types = list(getattr(message_cls, "SLOT_TYPES", []))
     for field_name, slot_type in zip(slot_names, slot_types):
         try:
-            default_value = getattr(instance, field_name)
-        except AttributeError:
-            default_value = None
-        descriptor: Dict[str, object] = {
-            "name": field_name,
-            "type": rosidl_slot_type_to_string(slot_type),
-            "is_array": False,
-            "array_size": None,
-            "max_size": None,
-            "is_basic": False,
-            "default": message_value_to_primitive(default_value),
-        }
-        if rosidl_slot_is_array(slot_type):
-            descriptor["is_array"] = True
-            descriptor["array_size"] = rosidl_slot_array_size(slot_type)
-            max_size = rosidl_slot_maximum_size(slot_type)
-            if max_size:
-                descriptor["max_size"] = max_size
-            value_type = rosidl_slot_value_type(slot_type)
-            descriptor["element_type"] = rosidl_slot_type_to_string(value_type)
-            descriptor["element_is_basic"] = bool(rosidl_slot_is_basic(value_type))
-            if not descriptor["element_is_basic"]:
-                element_cls = get_message_class_for_slot(value_type)
-                if element_cls is not None:
-                    descriptor["element_schema"] = describe_message_type(element_cls, next_visited)
-                    descriptor["element_example"] = message_value_to_primitive(element_cls())
-        else:
-            if rosidl_slot_is_basic(slot_type):
-                descriptor["is_basic"] = True
-                descriptor["base_type"] = rosidl_slot_type_to_string(slot_type)
+            try:
+                default_value = getattr(instance, field_name)
+            except AttributeError:
+                default_value = None
+            descriptor: Dict[str, object] = {
+                "name": field_name,
+                "type": rosidl_slot_type_to_string(slot_type),
+                "is_array": False,
+                "array_size": None,
+                "max_size": None,
+                "is_basic": False,
+                "default": message_value_to_primitive(default_value),
+            }
+            if rosidl_slot_is_array(slot_type):
+                descriptor["is_array"] = True
+                descriptor["array_size"] = rosidl_slot_array_size(slot_type)
+                max_size = rosidl_slot_maximum_size(slot_type)
+                if max_size:
+                    descriptor["max_size"] = max_size
+                value_type = rosidl_slot_value_type(slot_type)
+                if value_type is not None:
+                    descriptor["element_type"] = rosidl_slot_type_to_string(value_type)
+                    descriptor["element_is_basic"] = bool(rosidl_slot_is_basic(value_type))
+                    if not descriptor["element_is_basic"]:
+                        element_cls = get_message_class_for_slot(value_type)
+                        if element_cls is not None:
+                            descriptor["element_schema"] = describe_message_type(element_cls, next_visited)
+                            descriptor["element_example"] = message_value_to_primitive(element_cls())
+                else:
+                    descriptor["element_type"] = "unknown"
             else:
-                descriptor["base_type"] = rosidl_slot_type_to_string(slot_type)
-                nested_cls = get_message_class_for_slot(slot_type)
-                if nested_cls is not None:
-                    descriptor["children"] = describe_message_type(nested_cls, next_visited)
-        descriptors.append(descriptor)
+                if rosidl_slot_is_basic(slot_type):
+                    descriptor["is_basic"] = True
+                    descriptor["base_type"] = rosidl_slot_type_to_string(slot_type)
+                else:
+                    descriptor["base_type"] = rosidl_slot_type_to_string(slot_type)
+                    nested_cls = get_message_class_for_slot(slot_type)
+                    if nested_cls is not None:
+                        descriptor["children"] = describe_message_type(nested_cls, next_visited)
+            descriptors.append(descriptor)
+        except ValueError as error:
+            descriptors.append(
+                {
+                    "name": field_name,
+                    "type": "unknown",
+                    "error": str(error),
+                }
+            )
     return descriptors
 
 

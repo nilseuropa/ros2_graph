@@ -15,6 +15,7 @@ import { NodeToolsApi } from './api/nodeToolsApi.js';
 import { TopicToolsApi } from './api/topicToolsApi.js';
 import { ActionController } from './controllers/actionController.js';
 import { TopicEchoController } from './controllers/topicEchoController.js';
+import { TopicPlotController } from './controllers/topicPlotController.js';
 import { ThemeManager } from './ui/themeManager.js';
 
 const canvas = document.getElementById('graphCanvas');
@@ -61,6 +62,11 @@ const topicEchoController = new TopicEchoController({
   overlay: overlayPanel,
   statusBar,
 });
+const topicPlotController = new TopicPlotController({
+  topicApi,
+  overlay: overlayPanel,
+  statusBar,
+});
 const actionController = new ActionController({
   store,
   overlay: overlayPanel,
@@ -70,6 +76,7 @@ const actionController = new ActionController({
   parameterEditor,
   serviceCaller,
   topicEcho: topicEchoController,
+  topicPlot: topicPlotController,
 });
 const contextMenu = new ContextMenu(contextMenuEl, {
   getItems: target => getContextMenuItems(target),
@@ -415,6 +422,7 @@ function getContextMenuItems(target) {
     return [
       { action: 'topic-info', label: 'Info' },
       { action: 'topic-stats', label: 'Statistics' },
+      { action: 'topic-plot', label: 'Plot' },
       { action: 'topic-echo', label: 'Echo' },
     ];
   }

@@ -18,6 +18,10 @@ export class TopicToolsApi {
     return this.client.request(`/topic_tool?${search.toString()}`, { timeout });
   }
 
+  async getSchema(topic, { timeout } = {}) {
+    return this.request('schema', topic, { timeout });
+  }
+
   async echo(topic, { mode, stream, peer, timeout } = {}) {
     const params = {};
     if (mode) params.mode = mode;

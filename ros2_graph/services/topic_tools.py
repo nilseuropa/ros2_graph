@@ -58,6 +58,7 @@ class TopicEchoAggregator:
             "data": data_field,
             "data_text": messages.stringify_echo_value(data_field),
             "received_at": timestamp,
+            "message": primitive,
         }
         sample["data_rows"] = messages.build_echo_data_rows(data_field)
         with self._lock:
@@ -146,7 +147,7 @@ class TopicToolService:
         params_map = params or {}
         if action == "echo":
             return self._handle_topic_echo_request(topic, peer, params_map)
-        if action not in {"info", "stats"}:
+        if action not in {"info", "stats", "schema"}:
             return 400, {"error": f"unsupported action '{action}'"}
 
         snapshot = self._snapshot
@@ -161,6 +162,21 @@ class TopicToolService:
                 "action": action,
                 "topic": topic,
                 "data": self._build_topic_info_payload(snapshot, topic, peer),
+            }
+        if action == "schema":
+            try:
+                schemas = self._describe_topic_schema(topic)
+            except ValueError as exc:
+                return 404, {"error": str(exc)}
+            except RuntimeError as exc:
+                return 503, {"error": str(exc)}
+            except Exception as exc:  # pragma: no cover - defensive
+                self._node.get_logger().warning(f"Failed to describe schema for {topic}: {exc}")
+                return 500, {"error": str(exc)}
+            return 200, {
+                "action": action,
+                "topic": topic,
+                "schemas": schemas,
             }
 
         duration = 2.5
@@ -323,6 +339,46 @@ class TopicToolService:
             if not aggregator.has_watchers():
                 aggregator.destroy()
                 self._echo_aggregators.pop(topic, None)
+
+    def _describe_topic_schema(self, topic: str) -> List[Dict[str, object]]:
+        snapshot = self._snapshot
+        if snapshot is None:
+            raise RuntimeError("graph not ready yet")
+        type_names = list(snapshot.topics.get(topic, ()))
+        if not type_names:
+            raise ValueError(f"topic '{topic}' not found")
+        schemas: List[Dict[str, object]] = []
+        errors: List[str] = []
+        for type_name in type_names:
+            try:
+                entry = self._build_schema_entry(type_name)
+            except Exception as exc:  # pragma: no cover - defensive
+                errors.append(str(exc))
+                continue
+            if entry:
+                schemas.append(entry)
+        if schemas:
+            return schemas
+        if errors:
+            raise RuntimeError(errors[0])
+        raise RuntimeError(f"no schema data available for '{topic}'")
+
+    def _build_schema_entry(self, type_name: str) -> Optional[Dict[str, object]]:
+        try:
+            from rosidl_runtime_py.utilities import get_message  # type: ignore
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise RuntimeError("rosidl_runtime_py is required for topic schema support") from exc
+        try:
+            message_cls = get_message(type_name)
+        except (AttributeError, ModuleNotFoundError, ValueError) as exc:
+            raise RuntimeError(f"failed to import message type '{type_name}'") from exc
+        schema = messages.describe_message_type(message_cls)
+        example = messages.message_value_to_primitive(message_cls())
+        return {
+            "type": type_name,
+            "fields": schema,
+            "example": example,
+        }
 
     def _build_topic_info_payload(
         self,
