@@ -508,7 +508,7 @@ class TopicToolService:
             context.init(args=None)
             executor = SingleThreadedExecutor(context=context)
             probe = rclpy.create_node(
-                "ros2_graph_metrics_probe",
+                "ros2graph_explorer_metrics_probe",
                 context=context,
                 allow_undeclared_parameters=True,
                 automatically_declare_parameters_from_overrides=False,

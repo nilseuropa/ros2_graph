@@ -1,6 +1,6 @@
-# ros2_graph
+# ros2graph_explorer
 
-`ros2_graph` is a headless ROS 2 graph inspector that ships with a zero-dependency web
+`ros2graph_explorer` is a headless ROS 2 graph inspector that ships with a zero-dependency web
 client. The node continuously samples the ROS graph, emits textual snapshots, and
 serves a richly interactive canvas where you can explore connectivity, inspect QoS,
 adjust parameters, and even call services without leaving the browser.
@@ -31,18 +31,18 @@ adjust parameters, and even call services without leaving the browser.
 ### Build & Launch
 
 ```bash
-colcon build --packages-select ros2_graph
+colcon build --packages-select ros2graph_explorer
 source install/setup.bash
 
 # Run with the embedded web server enabled (default port 8734)
-ros2 run ros2_graph ros2_graph
+ros2 run ros2graph_explorer ros2graph_explorer
 ```
 
 By default the node prints the graph as DOT to stdout and serves the UI at
 `http://localhost:8734/`. You can tweak behaviour via parameters:
 
 ```bash
-ros2 run ros2_graph ros2_graph \
+ros2 run ros2graph_explorer ros2graph_explorer \
   --ros-args \
     -p output_format:=json \
     -p update_interval:=1.0 \
@@ -54,7 +54,7 @@ ros2 run ros2_graph ros2_graph \
 
 ## Web UI Tour
 
-The client lives entirely in `ros2_graph/web/static`. Point your browser at the node and
+The client lives entirely in `ros2graph_explorer/web/static`. Point your browser at the node and
 you’ll see a two-layer canvas (graph + overlay) and a status bar describing the latest
 interaction.
 ![Canvas](doc/ros2_graph.png)
@@ -88,6 +88,33 @@ interaction.
   side to avoid redundant sampling.
 ![Topic stats](doc/topic_stats.png)
 
+### Settings Menu
+
+Click the gear button in the header to open the full-screen settings overlay. The **General**
+tab lets you tune how aggressively the app refreshes data: set the graph polling period,
+decide whether topic echoes/plots update on every new snapshot, and provide fallback
+intervals (250–10 000 ms) when automatic streaming is disabled. The **Theme** tab switches
+between light, dark, and a fully custom palette. Custom mode exposes color pickers for the
+canvas, overlays, nodes, topics, and edges, plus a base scheme selector; changes apply
+instantly and are persisted in `localStorage` so your palette is reused on the next visit.
+![General settings](doc/settings.png)
+
+
+### Topic Plotting
+
+Right-click a topic bubble/edge and choose **Plot** to launch the topic plotter. The UI
+introspects the topic schema + a live sample, filters for numeric fields, and presents a
+selector where you can pick up to four values (across nested paths) to chart. After you hit
+**Plot**, a dedicated overlay starts streaming the topic, rendering the last 60 seconds of
+data (capped at ~480 points) with per-series colors, legends, and min/max readouts. Excluded
+message types (e.g., images/point clouds) are skipped automatically. Plot refresh cadence
+is driven by the settings menu: when “Refresh echoes & plots on every update” is enabled the
+chart updates whenever a new graph snapshot arrives, otherwise it follows the custom plot
+interval you configured.
+![Data select](doc/topic_plot_sel.png)
+![Plot](doc/topic_plot.png)
+
+
 ### Topic Echo
 1. Right-click a topic edge or topic bubble → **Echo**.
 2. The server creates a lightweight subscriber dedicated to that topic (the helper node is
@@ -111,7 +138,6 @@ interaction.
    the new value reflected in the table.
 
 ![Parameter list](doc/node_params.png)
-
 ![Parameter editor](doc/set_param.png)
 
 ### Service Caller
@@ -126,7 +152,6 @@ interaction.
 3. Hit **Call** to invoke the service. The response is rendered as pretty-printed JSON.
 
 ![Service list](doc/node_services.png)
-
 ![Service call](doc/service_call.png)
 
 ### Status & keyboard shortcuts
@@ -139,7 +164,7 @@ interaction.
 
 ## Server ↔ Front-End Contract
 
-The web server lives in `ros2_graph/web/server.py`. It exposes a small REST surface that
+The web server lives in `ros2graph_explorer/web/server.py`. It exposes a small REST surface that
 the bundled UI consumes, and you can reuse the same endpoints from your own client.
 
 ### 1. Graph Snapshots

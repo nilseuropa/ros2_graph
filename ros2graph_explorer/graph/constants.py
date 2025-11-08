@@ -1,8 +1,8 @@
 INTERNAL_NODE_NAMES = {
-    "/ros2_graph_metrics_probe",
-    "ros2_graph_metrics_probe",
-    "/ros2_graph",
-    "ros2_graph",
+    "/ros2graph_explorer_metrics_probe",
+    "ros2graph_explorer_metrics_probe",
+    "/ros2graph_explorer",
+    "ros2graph_explorer",
     "/ros2cli_daemon",
     "ros2cli_daemon",
 }

@@ -1,4 +1,4 @@
-const STORAGE_GENERAL_SETTINGS_KEY = 'ros2_graph.settings.general';
+const STORAGE_GENERAL_SETTINGS_KEY = 'ros2graph_explorer.settings.general';
 
 export const DEFAULT_GENERAL_SETTINGS = Object.freeze({
   graphRefreshIntervalMs: 2000,

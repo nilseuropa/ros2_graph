@@ -1,6 +1,5 @@
+ros2graph_explorer/web/__pycache__/
 
-ros2_graph/web/__pycache__/
-
-ros2_graph/__pycache__/
+ros2graph_explorer/__pycache__/
 
 __pycache__/

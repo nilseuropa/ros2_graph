@@ -1,5 +1,5 @@
-const STORAGE_THEME_KEY = 'ros2_graph.theme';
-const STORAGE_CUSTOM_KEY = 'ros2_graph.theme.custom';
+const STORAGE_THEME_KEY = 'ros2graph_explorer.theme';
+const STORAGE_CUSTOM_KEY = 'ros2graph_explorer.theme.custom';
 
 const CUSTOM_COLOR_KEYS = [
   'bg',

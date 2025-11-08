@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>ros2_graph</name>
-  <version>0.0.0</version>
-  <description>Headless ROS 2 computation graph visualizer inspired by rqt_graph.</description>
+  <name>ros2graph_explorer</name>
+  <version>0.1.0</version>
+  <description>Web based ROS2 computation graph explorer inspired by rqt_graph.</description>
   <maintainer email="marton@nowtech.hu">nils</maintainer>
   <license>BSD-3-Clause</license>
 

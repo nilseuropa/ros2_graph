@@ -56,7 +56,7 @@ def generate_simple_graphviz(snapshot: GraphSnapshot) -> Tuple[str, Dict[str, st
         return f"{name}\\n{type_lines}"
 
     lines: List[str] = [
-        "digraph ros2_graph {",
+        "digraph ros2graph_explorer {",
         "  graph [rankdir=LR];",
         "  node [fontsize=12];",
         "  edge [fontsize=10];",
@@ -159,7 +159,7 @@ def _generate_rqt_graphviz(snapshot: GraphSnapshot) -> Tuple[str, Dict[str, str]
     graph_adapter.nn_edges = nn_edges
 
     factory = PydotFactory()
-    generator = RosGraphDotcodeGenerator("ros2_graph_web")
+    generator = RosGraphDotcodeGenerator("ros2graph_explorer_web")
     dot_source = generator.generate_dotcode(
         rosgraphinst=graph_adapter,
         ns_filter="",

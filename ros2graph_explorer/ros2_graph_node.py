@@ -56,7 +56,7 @@ class Ros2GraphNode(Node):
     """ROS node that streams graph snapshots to stdout and the web UI."""
 
     def __init__(self) -> None:
-        super().__init__("ros2_graph")
+        super().__init__("ros2graph_explorer")
         self.declare_parameter("output_format", "dot")
         self.declare_parameter("update_interval", 2.0)
         self.declare_parameter("print_once", False)

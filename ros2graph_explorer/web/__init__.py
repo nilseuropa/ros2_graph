@@ -1,4 +1,4 @@
-"""Web helpers for ros2_graph."""
+"""Web helpers for ros2graph_explorer."""
 
 from .server import GraphWebServer
 

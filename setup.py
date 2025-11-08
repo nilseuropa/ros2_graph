@@ -2,7 +2,7 @@ from pathlib import Path
 
 from setuptools import find_packages, setup
 
-package_name = 'ros2_graph'
+package_name = 'ros2graph_explorer'
 
 
 def collect_static_files():
@@ -38,7 +38,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'ros2_graph = ros2_graph.ros2_graph_node:main',
+            'ros2graph_explorer = ros2graph_explorer.ros2_graph_node:main',
         ],
     },
 )
