@@ -53,8 +53,13 @@ generalSettings.subscribe(state => {
   const previous = generalSettingsState;
   generalSettingsState = state;
   updateSettingsForm({ generalState: generalSettingsState });
+  renderer.setEdgeLineStyle(state.edgeLineStyle);
+  renderer.setBezierSmoothness(state.bezierSmoothness);
   if (state.graphRefreshIntervalMs !== previous.graphRefreshIntervalMs) {
     scheduleNextRefresh();
+  }
+  if (state.layoutMode !== previous.layoutMode) {
+    void loadGraph({ silent: true });
   }
 });
 
@@ -173,6 +178,28 @@ function ensureSettingsForm(container) {
               <label for="generalGraphRefresh">Graph refresh rate (ms)</label>
               <input type="number" id="generalGraphRefresh" min="500" max="60000" step="100">
               <p class="settings-form__hint">Controls how often the graph data is fetched automatically.</p>
+            </div>
+            <div class="settings-form__field">
+              <label for="generalLayoutMode">Graph layout source</label>
+              <select id="generalLayoutMode">
+                <option value="auto">Auto (prefer ROS tooling)</option>
+                <option value="rqt">ROS tooling (rqt_graph style)</option>
+                <option value="simple">Built-in simple layout</option>
+              </select>
+              <p class="settings-form__hint">Choose how node/topic positions are generated for rendering.</p>
+            </div>
+            <div class="settings-form__field">
+              <label for="generalEdgeLineStyle">Edge line style</label>
+              <select id="generalEdgeLineStyle">
+                <option value="orthogonal">Orthogonal</option>
+                <option value="bezier">Bezier</option>
+              </select>
+              <p class="settings-form__hint">Controls how topic edges are drawn on the canvas.</p>
+            </div>
+            <div class="settings-form__field">
+              <label for="generalBezierSmoothness">Bezier smoothness (<span id="generalBezierSmoothnessValue">35</span>)</label>
+              <input type="range" id="generalBezierSmoothness" min="5" max="100" step="1">
+              <p class="settings-form__hint">Higher values create curvier Bezier edges.</p>
             </div>
             <label class="settings-form__toggle">
               <input type="checkbox" id="generalStreamAuto">
@@ -345,6 +372,10 @@ function ensureSettingsForm(container) {
   };
   const generalInputs = {
     graphRefresh: container.querySelector('#generalGraphRefresh'),
+    layoutMode: container.querySelector('#generalLayoutMode'),
+    edgeLineStyle: container.querySelector('#generalEdgeLineStyle'),
+    bezierSmoothness: container.querySelector('#generalBezierSmoothness'),
+    bezierSmoothnessValue: container.querySelector('#generalBezierSmoothnessValue'),
     streamAuto: container.querySelector('#generalStreamAuto'),
     echoRefresh: container.querySelector('#generalEchoRefresh'),
     plotRefresh: container.querySelector('#generalPlotRefresh'),
@@ -444,6 +475,24 @@ function updateSettingsForm({ themeState = themeManager.getState(), generalState
       generalInputs.graphRefresh.value =
         generalStateSafe.graphRefreshIntervalMs ?? DEFAULT_GENERAL_SETTINGS.graphRefreshIntervalMs;
     }
+    if (generalInputs.layoutMode) {
+      generalInputs.layoutMode.value =
+        generalStateSafe.layoutMode ?? DEFAULT_GENERAL_SETTINGS.layoutMode;
+    }
+    if (generalInputs.edgeLineStyle) {
+      generalInputs.edgeLineStyle.value =
+        generalStateSafe.edgeLineStyle ?? DEFAULT_GENERAL_SETTINGS.edgeLineStyle;
+    }
+    if (generalInputs.bezierSmoothness) {
+      const smoothness =
+        generalStateSafe.bezierSmoothness ?? DEFAULT_GENERAL_SETTINGS.bezierSmoothness;
+      generalInputs.bezierSmoothness.value = smoothness;
+      if (generalInputs.bezierSmoothnessValue) {
+        generalInputs.bezierSmoothnessValue.textContent = String(smoothness);
+      }
+      const bezierEnabled = (generalStateSafe.edgeLineStyle ?? DEFAULT_GENERAL_SETTINGS.edgeLineStyle) === 'bezier';
+      generalInputs.bezierSmoothness.disabled = !bezierEnabled;
+    }
     if (generalInputs.streamAuto) {
       generalInputs.streamAuto.checked = Boolean(generalStateSafe.streamAutoRefresh);
     }
@@ -475,6 +524,21 @@ function handleGeneralSettingsControl(target) {
     } else {
       target.value =
         generalSettingsState.graphRefreshIntervalMs ?? DEFAULT_GENERAL_SETTINGS.graphRefreshIntervalMs;
+    }
+    return true;
+  }
+  if (target === generalInputs.layoutMode) {
+    generalSettings.update({ layoutMode: target.value });
+    return true;
+  }
+  if (target === generalInputs.edgeLineStyle) {
+    generalSettings.update({ edgeLineStyle: target.value });
+    return true;
+  }
+  if (target === generalInputs.bezierSmoothness) {
+    const value = readIntegerInput(target);
+    if (value !== null) {
+      generalSettings.update({ bezierSmoothness: value });
     }
     return true;
   }
@@ -518,6 +582,8 @@ function isGeneralNumberInput(target) {
   }
   return (
     target === generalInputs.graphRefresh ||
+    target === generalInputs.layoutMode ||
+    target === generalInputs.edgeLineStyle ||
     target === generalInputs.echoRefresh ||
     target === generalInputs.plotRefresh
   );
@@ -703,14 +769,18 @@ async function loadGraph({ manual = false, silent = false } = {}) {
     store.setStatus(manual ? 'Refreshing graph…' : 'Fetching graph…');
   }
   try {
-    const payload = await api.fetchGraph();
+    const payload = await api.fetchGraph({ layoutMode: generalSettingsState?.layoutMode });
     const graph = payload.graph ?? payload;
     const changed = store.setGraph(graph, payload.fingerprint);
     const nodeCount = graph.nodes?.length ?? 0;
     const topicCount = Object.keys(graph.topics || {}).length;
     const edgeCount = graph.edges?.length ?? 0;
+    const layoutSource = graph.graphviz?.source ?? 'none';
     const layoutEngine = graph.graphviz?.engine ? `graphviz/${graph.graphviz.engine}` : 'unavailable';
-    const meta = `nodes: ${nodeCount} | topics: ${topicCount} | edges: ${edgeCount} | layout: ${layoutEngine} | fingerprint: ${payload.fingerprint ?? 'n/a'}`;
+    const edgeStyle = generalSettingsState?.edgeLineStyle ?? DEFAULT_GENERAL_SETTINGS.edgeLineStyle;
+    const edgeSmoothness =
+      generalSettingsState?.bezierSmoothness ?? DEFAULT_GENERAL_SETTINGS.bezierSmoothness;
+    const meta = `nodes: ${nodeCount} | topics: ${topicCount} | edges: ${edgeCount} | layout: ${layoutSource} (${layoutEngine}) | edge: ${edgeStyle}/${edgeSmoothness} | fingerprint: ${payload.fingerprint ?? 'n/a'}`;
     store.setMeta(meta);
     const timestamp = new Date((payload.generated_at ?? Date.now() / 1000) * 1000);
     store.setStatus(`Last update: ${timestamp.toLocaleTimeString()}`);
@@ -765,6 +835,8 @@ function init() {
     customThemeResetBtn.addEventListener('click', handleCustomThemeReset);
   }
   renderer.setView(store.getView());
+  renderer.setEdgeLineStyle(generalSettingsState?.edgeLineStyle);
+  renderer.setBezierSmoothness(generalSettingsState?.bezierSmoothness);
   renderer.setSelection(store.getSelection());
   resizeCanvas();
   void loadGraph();

@@ -92,6 +92,7 @@ interaction.
 
 Click the gear button in the header to open the full-screen settings overlay. The **General**
 tab lets you tune how aggressively the app refreshes data: set the graph polling period,
+select the graph layout source (auto, ROS tooling/rqt-style, or built-in simple),
 decide whether topic echoes/plots update on every new snapshot, and provide fallback
 intervals (250–10 000 ms) when automatic streaming is disabled. The **Theme** tab switches
 between light, dark, and a fully custom palette. Custom mode exposes color pickers for the
@@ -169,7 +170,7 @@ the bundled UI consumes, and you can reuse the same endpoints from your own clie
 
 ### 1. Graph Snapshots
 
-`GET /graph`
+`GET /graph[?layout=auto|rqt|simple]`
 
 Returns the latest graph snapshot. Example:
 
@@ -189,6 +190,8 @@ Returns the latest graph snapshot. Example:
   },
   "graphviz": {
     "engine": "dot",
+    "source": "rqt",                      // optional: actual layout source used
+    "requested": "rqt",                   // optional: requested mode
     "plain": "graph 1 2 1 ...",            // optional plain-text layout dump
     "ids": {"nodes": {"talker": "n0", "listener": "n1"}} // optional mapping
   }

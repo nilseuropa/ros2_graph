@@ -5,8 +5,17 @@ export class GraphApi {
     this.client = client;
   }
 
-  async fetchGraph() {
+  async fetchGraph({ layoutMode } = {}) {
+    const mode = normalizeLayoutMode(layoutMode);
     const timestamp = Date.now();
-    return this.client.request(`/graph?ts=${timestamp}`, { cache: 'no-store' });
+    const query = new URLSearchParams({ ts: String(timestamp), layout: mode });
+    return this.client.request(`/graph?${query.toString()}`, { cache: 'no-store' });
   }
+}
+
+function normalizeLayoutMode(value) {
+  if (value === 'rqt' || value === 'simple') {
+    return value;
+  }
+  return 'auto';
 }

@@ -15,7 +15,12 @@ HIDE_SINGLE_CONNECTION_TOPICS = False
 HIDE_DEAD_END_TOPICS = False
 HIDE_TF_NODES = False
 
-_GRAPHVIZ_CACHE: Dict[str, Tuple[str, Dict[str, str]]] = {}
+LAYOUT_MODE_AUTO = "auto"
+LAYOUT_MODE_RQT = "rqt"
+LAYOUT_MODE_SIMPLE = "simple"
+_VALID_LAYOUT_MODES = {LAYOUT_MODE_AUTO, LAYOUT_MODE_RQT, LAYOUT_MODE_SIMPLE}
+
+_GRAPHVIZ_CACHE: Dict[Tuple[str, str], Tuple[str, Dict[str, str], str]] = {}
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -24,16 +29,42 @@ def graphviz_id_map(snapshot: GraphSnapshot) -> Dict[str, str]:
     return dict(id_map)
 
 
-def generate_graphviz(snapshot: GraphSnapshot) -> Tuple[str, Dict[str, str]]:
+def normalize_layout_mode(mode: str | None) -> str:
+    if not mode:
+        return LAYOUT_MODE_AUTO
+    cleaned = mode.strip().lower()
+    if cleaned in _VALID_LAYOUT_MODES:
+        return cleaned
+    return LAYOUT_MODE_AUTO
+
+
+def generate_graphviz(snapshot: GraphSnapshot, mode: str = LAYOUT_MODE_AUTO) -> Tuple[str, Dict[str, str]]:
+    dot_source, id_map, _ = generate_graphviz_with_mode(snapshot, mode)
+    return dot_source, id_map
+
+
+def generate_graphviz_with_mode(
+    snapshot: GraphSnapshot, mode: str = LAYOUT_MODE_AUTO
+) -> Tuple[str, Dict[str, str], str]:
+    normalized_mode = normalize_layout_mode(mode)
     fingerprint = snapshot.fingerprint()
-    cached = _GRAPHVIZ_CACHE.get(fingerprint)
+    cache_key = (fingerprint, normalized_mode)
+    cached = _GRAPHVIZ_CACHE.get(cache_key)
     if cached is not None:
         return cached
-    try:
-        result = _generate_rqt_graphviz(snapshot)
-    except Exception:  # pragma: no cover - optional dependency path
-        result = generate_simple_graphviz(snapshot)
-    _GRAPHVIZ_CACHE[fingerprint] = result
+
+    if normalized_mode == LAYOUT_MODE_SIMPLE:
+        dot_source, id_map = generate_simple_graphviz(snapshot)
+        result = (dot_source, id_map, LAYOUT_MODE_SIMPLE)
+    else:
+        try:
+            dot_source, id_map = _generate_rqt_graphviz(snapshot)
+            result = (dot_source, id_map, LAYOUT_MODE_RQT)
+        except Exception:  # pragma: no cover - optional dependency path
+            dot_source, id_map = generate_simple_graphviz(snapshot)
+            result = (dot_source, id_map, LAYOUT_MODE_SIMPLE)
+
+    _GRAPHVIZ_CACHE[cache_key] = result
     return result
 
 

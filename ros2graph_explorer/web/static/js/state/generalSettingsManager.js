@@ -5,12 +5,16 @@ export const DEFAULT_GENERAL_SETTINGS = Object.freeze({
   streamAutoRefresh: true,
   echoRefreshIntervalMs: 1000,
   plotRefreshIntervalMs: 1000,
+  layoutMode: 'auto',
+  edgeLineStyle: 'orthogonal',
+  bezierSmoothness: 35,
 });
 
 const LIMITS = Object.freeze({
   graphRefreshIntervalMs: { min: 500, max: 60000 },
   echoRefreshIntervalMs: { min: 250, max: 10000 },
   plotRefreshIntervalMs: { min: 250, max: 10000 },
+  bezierSmoothness: { min: 5, max: 100 },
 });
 
 export class GeneralSettingsManager {
@@ -108,7 +112,27 @@ function sanitizeState(state) {
     toInteger(state.plotRefreshIntervalMs, DEFAULT_GENERAL_SETTINGS.plotRefreshIntervalMs),
     LIMITS.plotRefreshIntervalMs,
   );
+  sanitized.layoutMode = sanitizeLayoutMode(state.layoutMode);
+  sanitized.edgeLineStyle = sanitizeEdgeLineStyle(state.edgeLineStyle);
+  sanitized.bezierSmoothness = clampInterval(
+    toInteger(state.bezierSmoothness, DEFAULT_GENERAL_SETTINGS.bezierSmoothness),
+    LIMITS.bezierSmoothness,
+  );
   return sanitized;
+}
+
+function sanitizeLayoutMode(value) {
+  if (value === 'rqt' || value === 'simple') {
+    return value;
+  }
+  return DEFAULT_GENERAL_SETTINGS.layoutMode;
+}
+
+function sanitizeEdgeLineStyle(value) {
+  if (value === 'bezier') {
+    return value;
+  }
+  return DEFAULT_GENERAL_SETTINGS.edgeLineStyle;
 }
 
 function toInteger(value, fallback) {
@@ -130,7 +154,10 @@ function statesEqual(a, b) {
     a.graphRefreshIntervalMs === b.graphRefreshIntervalMs &&
     a.streamAutoRefresh === b.streamAutoRefresh &&
     a.echoRefreshIntervalMs === b.echoRefreshIntervalMs &&
-    a.plotRefreshIntervalMs === b.plotRefreshIntervalMs
+    a.plotRefreshIntervalMs === b.plotRefreshIntervalMs &&
+    a.layoutMode === b.layoutMode &&
+    a.edgeLineStyle === b.edgeLineStyle &&
+    a.bezierSmoothness === b.bezierSmoothness
   );
 }
 

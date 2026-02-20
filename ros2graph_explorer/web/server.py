@@ -32,7 +32,9 @@ class GraphWebServer:
         self._port = port
         self._logger = logger
         self._lock = threading.Lock()
-        self._latest_payload: Optional[str] = None
+        self._latest_snapshot: Optional['GraphSnapshot'] = None
+        self._latest_fingerprint: Optional[str] = None
+        self._latest_generated_at: Optional[float] = None
         self._server = _ThreadingHTTPServer((host, port), self._create_handler())
         self._dot_path = shutil.which('dot')
         self._graphviz_warning_logged = False
@@ -56,7 +58,7 @@ class GraphWebServer:
                 if parent._is_static_path(path):
                     parent._serve_static(self, path)
                 elif path == '/graph':
-                    parent._serve_graph(self)
+                    parent._serve_graph(self, params)
                 elif path == '/topic_tool':
                     parent._serve_topic_tool(self, params)
                 elif path == '/node_tool':
@@ -118,32 +120,14 @@ class GraphWebServer:
         self._running = False
 
     def publish(self, snapshot: 'GraphSnapshot', fingerprint: str) -> None:
-        graph_dict = snapshot.to_dict()
-        try:
-            dot_source, graphviz_ids = layout.generate_graphviz(snapshot)
-        except Exception:  # pragma: no cover - defensive fallback
-            dot_source, graphviz_ids = layout.generate_simple_graphviz(snapshot)
-        plain_layout = self._compute_graphviz_plain(dot_source)
-        graphviz_info = {}
-        if plain_layout is not None:
-            graphviz_info['engine'] = 'dot'
-            graphviz_info['plain'] = plain_layout
-        if graphviz_ids:
-            graphviz_info['ids'] = graphviz_ids
-        if graphviz_info:
-            graph_dict['graphviz'] = graphviz_info
-        payload = {
-            'fingerprint': fingerprint,
-            'generated_at': time.time(),
-            'graph': graph_dict,
-        }
-        payload_json = json.dumps(payload, separators=(',', ':'))
         with self._lock:
-            self._latest_payload = payload_json
+            self._latest_snapshot = snapshot
+            self._latest_fingerprint = fingerprint
+            self._latest_generated_at = time.time()
 
-    def _latest(self) -> Optional[str]:
+    def _latest(self) -> Tuple[Optional['GraphSnapshot'], Optional[str], Optional[float]]:
         with self._lock:
-            return self._latest_payload
+            return self._latest_snapshot, self._latest_fingerprint, self._latest_generated_at
 
     def _is_static_path(self, path: str) -> bool:
         if path in STATIC_FILES:
@@ -183,9 +167,9 @@ class GraphWebServer:
         handler.end_headers()
         handler.wfile.write(data)
 
-    def _serve_graph(self, handler: BaseHTTPRequestHandler) -> None:
-        payload = self._latest()
-        if payload is None:
+    def _serve_graph(self, handler: BaseHTTPRequestHandler, params: Dict[str, list]) -> None:
+        snapshot, fingerprint, generated_at = self._latest()
+        if snapshot is None or fingerprint is None:
             message = b'{"error":"graph not ready yet"}'
             handler.send_response(503)
             handler.send_header('Content-Type', 'application/json')
@@ -195,6 +179,8 @@ class GraphWebServer:
             handler.wfile.write(message)
             return
 
+        requested_mode = layout.normalize_layout_mode(params.get('layout', [''])[0])
+        payload = self._build_graph_payload(snapshot, fingerprint, generated_at, requested_mode)
         data = payload.encode('utf-8')
         handler.send_response(200)
         handler.send_header('Content-Type', 'application/json')
@@ -202,6 +188,43 @@ class GraphWebServer:
         handler.send_header('Content-Length', str(len(data)))
         handler.end_headers()
         handler.wfile.write(data)
+
+    def _build_graph_payload(
+        self,
+        snapshot: 'GraphSnapshot',
+        fingerprint: str,
+        generated_at: Optional[float],
+        layout_mode: str,
+    ) -> str:
+        graph_dict = snapshot.to_dict()
+        layout_source = layout.LAYOUT_MODE_SIMPLE
+        try:
+            dot_source, graphviz_ids, layout_source = layout.generate_graphviz_with_mode(
+                snapshot,
+                layout_mode,
+            )
+        except Exception:  # pragma: no cover - defensive fallback
+            dot_source, graphviz_ids = layout.generate_simple_graphviz(snapshot)
+            layout_source = layout.LAYOUT_MODE_SIMPLE
+
+        plain_layout = self._compute_graphviz_plain(dot_source)
+        graphviz_info = {
+            'source': layout_source,
+            'requested': layout_mode,
+        }
+        if plain_layout is not None:
+            graphviz_info['engine'] = 'dot'
+            graphviz_info['plain'] = plain_layout
+        if graphviz_ids:
+            graphviz_info['ids'] = graphviz_ids
+        graph_dict['graphviz'] = graphviz_info
+
+        payload = {
+            'fingerprint': fingerprint,
+            'generated_at': generated_at if generated_at is not None else time.time(),
+            'graph': graph_dict,
+        }
+        return json.dumps(payload, separators=(',', ':'))
 
     def _serve_health(self, handler: BaseHTTPRequestHandler) -> None:
         handler.send_response(200)

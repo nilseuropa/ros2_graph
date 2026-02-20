@@ -68,6 +68,8 @@ export class GraphRenderer {
     this.selection = { nodes: new Set(), topics: new Set(), edges: new Set() };
     this.hover = null;
     this.palette = normalizeGraphPalette();
+    this.edgeLineStyle = 'orthogonal';
+    this.bezierSmoothness = 35;
   }
 
   setScene(scene) {
@@ -93,6 +95,22 @@ export class GraphRenderer {
   setPalette(palette) {
     this.palette = normalizeGraphPalette(palette);
     this.draw();
+  }
+
+  setEdgeLineStyle(style) {
+    this.edgeLineStyle = style === 'bezier' ? 'bezier' : 'orthogonal';
+    this.draw();
+  }
+
+  setBezierSmoothness(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) {
+      return;
+    }
+    this.bezierSmoothness = Math.max(5, Math.min(100, Math.trunc(numeric)));
+    if (this.edgeLineStyle === 'bezier') {
+      this.draw();
+    }
   }
 
   clear() {
@@ -167,7 +185,8 @@ export class GraphRenderer {
       updateRectBounds(geometry);
     });
     this.scene.edges.forEach(edge => {
-      const adjustedPoints = this.adjustEdgePoints(edge);
+      const basePoints = this.getBaseEdgePoints(edge);
+      const adjustedPoints = this.adjustEdgePoints(edge, basePoints);
       edge.__renderPoints = adjustedPoints;
       adjustedPoints.forEach(updatePointBounds);
     });
@@ -204,7 +223,8 @@ export class GraphRenderer {
       const key = `${edge.tail}->${edge.head}`;
       const isSelected = selectedEdges.has(key);
       const isHover = hoverEdges.has(key);
-      const points = edge.__renderPoints ?? this.adjustEdgePoints(edge);
+      const basePoints = this.getBaseEdgePoints(edge);
+      const points = edge.__renderPoints ?? this.adjustEdgePoints(edge, basePoints);
       ctx.save();
       ctx.lineWidth = strokeWidth;
       ctx.strokeStyle = isSelected
@@ -214,21 +234,82 @@ export class GraphRenderer {
         : palette.edge;
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath();
-      const [first, ...rest] = points;
-      ctx.moveTo(first.x, first.y);
-      rest.forEach(point => ctx.lineTo(point.x, point.y));
+      this.traceEdgePath(ctx, points);
       ctx.stroke();
       this.drawArrow(points);
       ctx.restore();
     }
   }
 
-  // Re-project edge endpoints so they stay anchored to the resized node/topic geometry.
-  adjustEdgePoints(edge) {
-    if (!edge?.points || edge.points.length < 2) {
-      return edge?.points ?? [];
+  getBaseEdgePoints(edge) {
+    if (this.edgeLineStyle === 'bezier' && Array.isArray(edge?.smoothPoints) && edge.smoothPoints.length >= 2) {
+      return edge.smoothPoints;
     }
-    const original = edge.points;
+    return edge?.points ?? [];
+  }
+
+  traceEdgePath(ctx, points) {
+    if (!Array.isArray(points) || points.length < 2) {
+      return;
+    }
+    if (this.edgeLineStyle !== 'bezier') {
+      const [first, ...rest] = points;
+      ctx.moveTo(first.x, first.y);
+      rest.forEach(point => ctx.lineTo(point.x, point.y));
+      return;
+    }
+    const start = points[0];
+    const end = points[points.length - 1];
+    const dx = end.x - start.x;
+    const dy = end.y - start.y;
+    const length = Math.hypot(dx, dy);
+    if (!Number.isFinite(length) || length < 1e-6) {
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(end.x, end.y);
+      return;
+    }
+
+    const smoothnessNorm = this.bezierSmoothness / 100;
+    const tx = dx / length;
+    const ty = dy / length;
+    const nx = -ty;
+    const ny = tx;
+
+    let side = 1;
+    if (points.length > 2) {
+      let sumCross = 0;
+      for (let i = 1; i < points.length - 1; i += 1) {
+        const p = points[i];
+        const relX = p.x - start.x;
+        const relY = p.y - start.y;
+        sumCross += dx * relY - dy * relX;
+      }
+      if (Math.abs(sumCross) > 1e-4) {
+        side = Math.sign(sumCross);
+      }
+    }
+
+    const handleAlong = length * (0.2 + 0.25 * smoothnessNorm);
+    const bend = Math.min(length * 0.55, length * (0.04 + 0.42 * smoothnessNorm));
+    const cp1 = {
+      x: start.x + tx * handleAlong + nx * bend * side,
+      y: start.y + ty * handleAlong + ny * bend * side,
+    };
+    const cp2 = {
+      x: end.x - tx * handleAlong + nx * bend * side,
+      y: end.y - ty * handleAlong + ny * bend * side,
+    };
+    ctx.moveTo(start.x, start.y);
+    ctx.bezierCurveTo(cp1.x, cp1.y, cp2.x, cp2.y, end.x, end.y);
+  }
+
+  // Re-project edge endpoints so they stay anchored to the resized node/topic geometry.
+  adjustEdgePoints(edge, basePoints = null) {
+    const source = Array.isArray(basePoints) ? basePoints : edge?.points;
+    if (!Array.isArray(source) || source.length < 2) {
+      return Array.isArray(source) ? source : [];
+    }
+    const original = source;
     const adjusted = original.map(point => ({ ...point }));
     this.adjustTailEndpoint(edge, adjusted, original);
     this.adjustHeadEndpoint(edge, adjusted, original);

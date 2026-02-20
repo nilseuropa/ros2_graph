@@ -340,6 +340,7 @@ export function buildScene(graph, canvasWidth, canvasHeight) {
         head: edge.head,
         key: `${edge.tail}->${edge.head}`,
         points,
+        smoothPoints: scaledPoints,
       };
   });
   edges.forEach(edge => {
